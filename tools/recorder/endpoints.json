@@ -1,0 +1,132 @@
+{
+  "_comment": "OSIRIS endpoint catalog for the recorder. Ported from tools/capture/endpoints.config.mjs (extract endpoints only). Event feeds (routed to lake.events) are listed in event_sources.",
+  "event_sources": ["earthquakes", "fires", "gdelt", "news", "live-news", "weather"],
+  "endpoints": [
+    {
+      "name": "flights",
+      "path": "/api/flights",
+      "pollMs": 30000,
+      "extract": [
+        {"arrayPath": "commercial_flights", "domain": "AIR", "entityType": "COMMERCIAL", "id": "icao24", "name": "callsign", "alt": "alt", "heading": "heading", "speed": "speed_knots"},
+        {"arrayPath": "private_flights", "domain": "AIR", "entityType": "PRIVATE", "id": "icao24", "name": "callsign", "alt": "alt", "heading": "heading", "speed": "speed_knots"},
+        {"arrayPath": "private_jets", "domain": "AIR", "entityType": "JET", "id": "icao24", "name": "callsign", "alt": "alt", "heading": "heading", "speed": "speed_knots"},
+        {"arrayPath": "military_flights", "domain": "AIR", "entityType": "MILITARY", "id": "icao24", "name": "callsign", "alt": "alt", "heading": "heading", "speed": "speed_knots", "threat": "ELEVATED"}
+      ]
+    },
+    {
+      "name": "satellites",
+      "path": "/api/satellites",
+      "pollMs": 60000,
+      "extract": [
+        {"arrayPath": "satellites", "domain": "SPACE", "entityType": "SATELLITE", "id": "norad_id", "name": "name", "lat": "lat", "lng": "lng", "alt": "alt"}
+      ]
+    },
+    {
+      "name": "maritime",
+      "path": "/api/maritime",
+      "pollMs": 60000,
+      "extract": [
+        {"arrayPath": "ports", "domain": "SEA", "entityType": "PORT", "name": "name", "lat": "lat", "lng": "lng"},
+        {"arrayPath": "chokepoints", "domain": "SEA", "entityType": "CHOKEPOINT", "name": "name", "lat": "lat", "lng": "lng"},
+        {"arrayPath": "ships", "domain": "SEA", "entityType": "VESSEL", "id": "mmsi", "name": "name", "lat": "lat", "lng": "lng", "heading": "heading", "speed": "speed"}
+      ]
+    },
+    {
+      "name": "earthquakes",
+      "path": "/api/earthquakes",
+      "pollMs": 300000,
+      "extract": [
+        {"arrayPath": "earthquakes", "domain": "LAND", "entityType": "SEISMIC", "id": "id", "name": "place", "lat": "lat", "lng": "lng", "alt": "depth"}
+      ]
+    },
+    {
+      "name": "gdelt",
+      "path": "/api/gdelt",
+      "pollMs": 300000,
+      "extract": [
+        {"arrayPath": "events", "domain": "LAND", "entityType": "INCIDENT", "name": "title", "lat": "lat", "lng": "lng"}
+      ]
+    },
+    {
+      "name": "fires",
+      "path": "/api/fires",
+      "pollMs": 600000,
+      "extract": [
+        {"arrayPath": "fires", "domain": "LAND", "entityType": "FIRE", "name": "brightness", "lat": "lat", "lng": "lng", "threat": "ELEVATED"}
+      ]
+    },
+    {
+      "name": "weather",
+      "path": "/api/weather",
+      "pollMs": 600000,
+      "extract": [
+        {"arrayPath": "events", "domain": "LAND", "entityType": "WEATHER", "id": "id", "name": "title", "lat": "lat", "lng": "lng"}
+      ]
+    },
+    {
+      "name": "malware",
+      "path": "/api/malware",
+      "pollMs": 600000,
+      "extract": [
+        {"arrayPath": "threats", "domain": "CYBER", "entityType": "MALWARE", "id": "id", "name": "ip", "lat": "lat", "lng": "lng", "threat": "HIGH"}
+      ]
+    },
+    {
+      "name": "radar",
+      "path": "/api/radar",
+      "pollMs": 300000,
+      "extract": [
+        {"arrayPath": "outages", "domain": "CYBER", "entityType": "OUTAGE", "name": "name", "lat": "lat", "lng": "lng"}
+      ]
+    },
+    {
+      "name": "air-quality",
+      "path": "/api/air-quality",
+      "pollMs": 900000,
+      "extract": [
+        {"arrayPath": "stations", "domain": "LAND", "entityType": "AIR_QUALITY", "name": "location", "lat": "lat", "lng": "lng"}
+      ]
+    },
+    {
+      "name": "news",
+      "path": "/api/news",
+      "pollMs": 600000,
+      "extract": [
+        {"arrayPath": "news", "domain": "LAND", "entityType": "NEWS", "id": "id", "name": "title", "coordsField": "coords", "coordsOrder": "latlng"}
+      ]
+    },
+    {
+      "name": "infrastructure",
+      "path": "/api/infrastructure",
+      "pollMs": 3600000,
+      "extract": [
+        {"arrayPath": "infrastructure", "domain": "LAND", "entityType": "NUCLEAR", "id": "id", "name": "name", "lat": "lat", "lng": "lng"}
+      ]
+    },
+    {
+      "name": "scm-suppliers",
+      "path": "/api/scm-suppliers",
+      "pollMs": 600000,
+      "extract": [
+        {"arrayPath": "suppliers", "domain": "LAND", "entityType": "SUPPLIER", "id": "id", "name": "name", "lat": "lat", "lng": "lng"}
+      ]
+    },
+    {
+      "name": "cctv",
+      "path": "/api/cctv",
+      "query": {"region": "all", "v": "2"},
+      "pollMs": 3600000,
+      "extract": [
+        {"arrayPath": "cameras", "domain": "LAND", "entityType": "CCTV", "id": "id", "name": "name", "lat": "lat", "lng": "lng"}
+      ]
+    },
+    {
+      "name": "live-news",
+      "path": "/api/live-news",
+      "pollMs": 3600000,
+      "extract": [
+        {"arrayPath": "feeds", "domain": "LAND", "entityType": "BROADCAST", "id": "id", "name": "name", "lat": "lat", "lng": "lng"}
+      ]
+    }
+  ]
+}

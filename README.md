@@ -73,6 +73,59 @@ Osiris is a production-grade OSINT platform that provides situational awareness 
 └─────────────────────────────────────────────────┘
 ```
 
+### Data Flow
+
+Full write-up: **[docs/architecture.md](docs/architecture.md)**.
+
+**Original — OSIRIS calls the APIs directly:**
+
+```mermaid
+flowchart LR
+  ext["External public APIs<br/>(adsb.lol, celestrak, USGS,<br/>NASA FIRMS, GDELT, ...)"]
+  osiris["OSIRIS server<br/>(Next.js /api/* routes)"]
+  cache["osiris-cache<br/>(nginx)"]
+  ui["Browser dashboard<br/>(MapLibre)"]
+
+  ext -->|"fetch on request/poll"| osiris
+  osiris --> cache
+  cache --> ui
+```
+
+**Refactored — streaming + lakehouse + knowledge graph + LLM:**
+
+```mermaid
+flowchart LR
+  ext["External public APIs"]
+  nifi["NiFi<br/>(collect + append provenance)"]
+  kafka["Kafka<br/>(topic osiris.entities)"]
+  osiris["OSIRIS server + dashboard<br/>(consumes live stream)"]
+  flink["Flink<br/>(Kafka to Iceberg + graph projection)"]
+
+  subgraph lakehouse [Lakehouse backend - system of record]
+    direction TB
+    iceberg["Iceberg tables<br/>(provenance + replayable history)"]
+    hms["Hive Metastore<br/>(:9083)"]
+    pg[("Postgres<br/>metastore DB")]
+    ozone["Apache Ozone<br/>(S3 Gateway, OM, SCM, Datanode)"]
+  end
+
+  neo4j["Neo4j<br/>(knowledge graph:<br/>entities + relationships)"]
+  llm["Ollama LLM<br/>(Mistral Small 3.2 24B,<br/>GraphRAG)"]
+
+  ext --> nifi --> kafka
+  kafka -->|"live feed"| osiris
+  kafka -->|"stream"| flink
+  flink -->|"write data files (s3a)"| iceberg
+  flink -->|"catalog ops"| hms
+  flink -->|"project nodes/edges"| neo4j
+  hms --> pg
+  iceberg -->|"stored on"| ozone
+  iceberg -. "rebuild projection" .-> neo4j
+  neo4j -->|"graph queries (Cypher)"| llm
+  iceberg -->|"history retrieval"| llm
+  llm -->|"grounded answers"| osiris
+```
+
 ---
 
 ## Features

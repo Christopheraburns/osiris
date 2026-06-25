@@ -1,4 +1,23 @@
 name: osiris
+
+# ── Shared Apache Ozone config (anchors reused by the ozone-* services) ──
+x-ozone-common: &ozone-common
+  image: apache/ozone:2.0.0
+  restart: unless-stopped
+  networks: [osiris-net]
+
+x-ozone-env: &ozone-env
+  OZONE-SITE.XML_ozone.om.address: ozone-om
+  OZONE-SITE.XML_ozone.om.http-address: ozone-om:9874
+  OZONE-SITE.XML_ozone.scm.names: ozone-scm
+  OZONE-SITE.XML_ozone.scm.client.address: ozone-scm
+  OZONE-SITE.XML_ozone.scm.block.client.address: ozone-scm
+  OZONE-SITE.XML_ozone.scm.datanode.id.dir: /data/metadata
+  OZONE-SITE.XML_ozone.metadata.dirs: /data/metadata
+  OZONE-SITE.XML_hdds.datanode.dir: /data/hdds
+  OZONE-SITE.XML_ozone.replication: "1"
+  no_proxy: "ozone-om,ozone-scm,ozone-s3g,localhost,127.0.0.1"
+
 services:
   osiris:
     # Pulls the prebuilt image from GitHub Container Registry. The `build:`
@@ -22,12 +41,13 @@ services:
       - NODE_ENV=production
       - PORT=3000
       - HOSTNAME=0.0.0.0
+      - RECORDER_URL=http://osiris-recorder:8090
     extra_hosts:
       - "host.docker.internal:host-gateway"
     restart: unless-stopped
     networks:
-      - default
-      - umami_default
+      - osiris-net
+    #  - umami_default
 
   osiris-cache:
     image: nginx:alpine
@@ -41,7 +61,7 @@ services:
       - osiris
     restart: unless-stopped
     networks:
-      - default
+      - osiris-net
 
   osiris-intel:
     build:
@@ -52,14 +72,309 @@ services:
       - "4000:4000"
     restart: unless-stopped
     networks:
-      - default
+      - osiris-net
+
+  nifi:
+    image: apache/nifi:2.0.0
+    container_name: nifi
+    ports:
+      - "8443:8443"
+    environment:
+      - SINGLE_USER_CREDENTIALS_USERNAME=admin
+      - SINGLE_USER_CREDENTIALS_PASSWORD=osirisadmin1
+    volumes:
+      - nifi-flow:/opt/nifi/nifi-current/conf
+    restart: unless-stopped
+    networks:
+      - osiris-net
+
+  kafka:
+    # 4.0.0+ required: apache/kafka:3.9.0 has KAFKA-18281, a KRaft storage-format
+    # bug that wrongly rejects the 0.0.0.0-bound controller listener with
+    # "advertised.listeners cannot use the nonroutable meta-address 0.0.0.0".
+    image: apache/kafka:4.0.0
+    container_name: kafka
+    ports:
+      # Host clients connect via localhost:29092; in-cluster containers use kafka:9092.
+      - "29092:29092"
+    environment:
+      - KAFKA_NODE_ID=1
+      - KAFKA_PROCESS_ROLES=broker,controller
+      - KAFKA_CONTROLLER_LISTENER_NAMES=CONTROLLER
+      - KAFKA_INTER_BROKER_LISTENER_NAME=INTERNAL
+      - KAFKA_LISTENERS=CONTROLLER://0.0.0.0:9093,INTERNAL://0.0.0.0:9092,HOST://0.0.0.0:29092
+      - KAFKA_ADVERTISED_LISTENERS=INTERNAL://kafka:9092,HOST://localhost:29092
+      - KAFKA_LISTENER_SECURITY_PROTOCOL_MAP=CONTROLLER:PLAINTEXT,INTERNAL:PLAINTEXT,HOST:PLAINTEXT
+      - KAFKA_CONTROLLER_QUORUM_VOTERS=1@kafka:9093
+      - KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR=1
+      - KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR=1
+      - KAFKA_TRANSACTION_STATE_LOG_MIN_ISR=1
+      - KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS=0
+      - KAFKA_LOG_DIRS=/var/lib/kafka/data
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    restart: unless-stopped
+    networks:
+      - osiris-net
+
+  # ── Apache Ozone (object store / Iceberg warehouse backend) ──
+  # Start order is self-managed via ENSURE_*_INITIALIZED + WAITFOR, reinforced
+  # by depends_on: scm -> om -> {datanode, s3g}.
+  ozone-scm:
+    <<: *ozone-common
+    container_name: ozone-scm
+    command: ["ozone", "scm"]
+    environment:
+      <<: *ozone-env
+      ENSURE_SCM_INITIALIZED: /data/metadata/scm/current/VERSION
+    ports:
+      - "9876:9876"
+    volumes:
+      - ozone-scm:/data
+
+  ozone-om:
+    <<: *ozone-common
+    container_name: ozone-om
+    command: ["ozone", "om"]
+    environment:
+      <<: *ozone-env
+      ENSURE_OM_INITIALIZED: /data/metadata/om/current/VERSION
+      WAITFOR: ozone-scm:9876
+      CORE-SITE.XML_hadoop.proxyuser.hadoop.hosts: "*"
+      CORE-SITE.XML_hadoop.proxyuser.hadoop.groups: "*"
+    ports:
+      - "9874:9874"
+    depends_on:
+      - ozone-scm
+    volumes:
+      - ozone-om:/data
+
+  ozone-datanode:
+    <<: *ozone-common
+    container_name: ozone-datanode
+    command: ["ozone", "datanode"]
+    environment:
+      <<: *ozone-env
+      WAITFOR: ozone-om:9874
+    depends_on:
+      - ozone-om
+    volumes:
+      - ozone-dn:/data
+
+  ozone-s3g:
+    <<: *ozone-common
+    container_name: ozone-s3g
+    command: ["ozone", "s3g"]
+    environment:
+      <<: *ozone-env
+      WAITFOR: ozone-om:9874
+    ports:
+      - "9878:9878"
+    depends_on:
+      - ozone-om
+
+  # ── Postgres: backing store for the Hive Metastore (Stage 2) ──
+  metastore-db:
+    image: postgres:16
+    container_name: metastore-db
+    environment:
+      POSTGRES_USER: hive
+      POSTGRES_PASSWORD: hive
+      POSTGRES_DB: metastore
+    volumes:
+      - metastore-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hive -d metastore"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - osiris-net
+
+  # ── Hive Metastore (Iceberg catalog; warehouse on Ozone via s3a) ──
+  hive-metastore:
+    build:
+      context: ./hive
+      dockerfile: Dockerfile
+    image: osiris-hive-metastore:latest
+    container_name: hive-metastore
+    environment:
+      SERVICE_NAME: metastore
+      DB_DRIVER: postgres
+      AWS_ACCESS_KEY_ID: osiris
+      AWS_SECRET_ACCESS_KEY: osiris
+    ports:
+      - "9083:9083"
+    depends_on:
+      metastore-db:
+        condition: service_healthy
+      ozone-s3g:
+        condition: service_started
+    restart: unless-stopped
+    networks:
+      - osiris-net
+
+  # ── Flink session cluster (Kafka -> Iceberg jobs) ──
+  flink-jobmanager:
+    build:
+      context: ./flink
+      dockerfile: Dockerfile
+    image: osiris-flink:latest
+    container_name: flink-jobmanager
+    command: jobmanager
+    ports:
+      - "8081:8081"
+    environment:
+      FLINK_PROPERTIES: |
+        jobmanager.rpc.address: flink-jobmanager
+        taskmanager.numberOfTaskSlots: 4
+        execution.checkpointing.interval: 10s
+        state.checkpoints.dir: file:///tmp/flink-checkpoints
+        state.savepoints.dir: file:///tmp/flink-savepoints
+    depends_on:
+      hive-metastore:
+        condition: service_started
+      kafka:
+        condition: service_started
+    restart: unless-stopped
+    networks:
+      - osiris-net
+
+  flink-taskmanager:
+    image: osiris-flink:latest
+    build:
+      context: ./flink
+      dockerfile: Dockerfile
+    container_name: flink-taskmanager
+    command: taskmanager
+    environment:
+      FLINK_PROPERTIES: |
+        jobmanager.rpc.address: flink-jobmanager
+        taskmanager.numberOfTaskSlots: 4
+    depends_on:
+      flink-jobmanager:
+        condition: service_started
+    restart: unless-stopped
+    networks:
+      - osiris-net
+
+  # ── Local LLM (Mistral Small 3.2 24B, 4-bit) served via Ollama on the GPU ──
+  # OpenAI-compatible API at http://ollama:11434 (in-cluster) / localhost:11434.
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+    ports:
+      - "11434:11434"
+    environment:
+      # 32k context fits comfortably with a 4-bit 24B on the 32 GB card.
+      OLLAMA_CONTEXT_LENGTH: "32768"
+      OLLAMA_KEEP_ALIVE: "30m"
+    volumes:
+      - ollama-models:/root/.ollama
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: unless-stopped
+    networks:
+      - osiris-net
+
+  # ── Neo4j knowledge graph (durable entities + relationships projection) ──
+  # Browser UI: http://localhost:7474  | Bolt (drivers): bolt://neo4j:7687
+  # Iceberg holds the full observation/event history; Neo4j holds the derived
+  # identity + relationship layer (see docs/lakehouse-recorder.md §"Dual-write").
+  neo4j:
+    image: neo4j:5.26-community
+    container_name: neo4j
+    ports:
+      - "7474:7474"   # HTTP browser
+      - "7687:7687"   # Bolt
+    environment:
+      # Default password is overridable via NEO4J_PASSWORD in .env.
+      NEO4J_AUTH: "neo4j/${NEO4J_PASSWORD:-osirisgraph1}"
+      # APOC core ships in the image (offline-friendly: copied from /labs, no download).
+      NEO4J_PLUGINS: '["apoc"]'
+      NEO4J_server_memory_pagecache_size: "1G"
+      NEO4J_server_memory_heap_initial__size: "1G"
+      NEO4J_server_memory_heap_max__size: "2G"
+    volumes:
+      - neo4j-data:/data
+      - neo4j-logs:/logs
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/localhost/7687' || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 40s
+    restart: unless-stopped
+    networks:
+      - osiris-net
+
+  # ── OSIRIS Recorder (direct-API -> Iceberg lakehouse + Neo4j projection) ──
+  # Runs idle by default (HTTP control on :8090, recording OFF until the UI
+  # or POST /control start). Poll/once/rebuild modes still available via CLI.
+  # See docs/lakehouse-recorder.md.
+  osiris-recorder:
+    build:
+      context: ./tools/recorder
+      dockerfile: Dockerfile
+    image: osiris-recorder:latest
+    container_name: osiris-recorder
+    environment:
+      OSIRIS_BASE_URL: http://osiris:3000
+      ICEBERG_URI: thrift://hive-metastore:9083
+      ICEBERG_WAREHOUSE: s3a://osiris-lake/warehouse
+      S3_ENDPOINT: http://ozone-s3g:9878
+      S3_ACCESS_KEY: osiris
+      S3_SECRET_KEY: osiris
+      NEO4J_URI: bolt://neo4j:7687
+      NEO4J_USER: neo4j
+      NEO4J_PASSWORD: ${NEO4J_PASSWORD:-osirisgraph1}
+      MODE: idle
+      CONTROL_PORT: "8090"
+    command: ["--mode", "idle"]
+    expose:
+      - "8090"
+    depends_on:
+      osiris:
+        condition: service_started
+      hive-metastore:
+        condition: service_started
+      ozone-s3g:
+        condition: service_started
+      neo4j:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - osiris-net
 
 volumes:
   nginx-cache:
+  nifi-flow:
+  kafka-data:
+  ozone-scm:
+  ozone-om:
+  ozone-dn:
+  metastore-db:
+  ollama-models:
+  neo4j-data:
+  neo4j-logs:
 
 networks:
-  umami_default:
-    external: true
+  # Shared bridge network so every service can reach the others by container
+  # name (e.g. http://osiris:3000, https://nifi:8443, kafka:9092).
+  # name is pinned (no project prefix) so the DNS search domain has no
+  # underscore -- otherwise FQDNs like hive-metastore.osiris_osiris-net break
+  # Java URI parsing in Hive/Iceberg ("Illegal character in hostname").
+  osiris-net:
+    name: osiris-net
+    driver: bridge
+  #umami_default:
+  #  external: true
 
 # ── CasaOS app-store metadata (ignored by plain Docker Compose) ──
 x-casaos:

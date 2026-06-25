@@ -40,6 +40,9 @@ scanner/
 # Data files
 threatfox.json
 
+# OSIRIS capture harness output (can be large)
+/captures/
+
 # Dev scripts (one-time migration helpers)
 scripts/
 

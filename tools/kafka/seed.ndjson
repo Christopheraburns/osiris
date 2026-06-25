@@ -1,0 +1,5 @@
+{"source":"flights","captured_at":"2026-06-24T20:45:51Z","domain":"AIR","entity_id":"a1b2c3","name":"OSY101","lat":50.45,"lng":30.52}
+{"source":"maritime","captured_at":"2026-06-24T20:45:52Z","domain":"SEA","entity_id":"311042900","name":"EVER GIVEN","lat":30.02,"lng":32.58}
+{"source":"earthquakes","captured_at":"2026-06-24T20:45:53Z","domain":"LAND","entity_id":"us6000abcd","name":"M4.2 - Aegean Sea","lat":38.9,"lng":26.1}
+{"source":"fires","captured_at":"2026-06-24T20:45:54Z","domain":"LAND","entity_id":"fire-9912","name":"330.1K","lat":34.05,"lng":-118.24}
+{"source":"satellites","captured_at":"2026-06-24T20:45:55Z","domain":"SPACE","entity_id":"25544","name":"ISS","lat":12.3,"lng":45.6}

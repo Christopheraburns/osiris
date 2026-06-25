@@ -1,0 +1,9 @@
+# OSIRIS recorder — pinned for reproducible (air-gapped) image builds.
+#
+# s3fs FileIO is used (not the pyarrow S3 client): pyarrow's S3 writer issues a
+# multipart upload that the Ozone S3 gateway rejects for small objects
+# ("CompleteMultipartUpload ... must specify at least one part"). s3fs does a
+# single PutObject for small files, which Ozone accepts (same as Hadoop S3A).
+pyiceberg[hive,pyarrow,s3fs]==0.8.1
+requests==2.32.3
+neo4j==5.28.1

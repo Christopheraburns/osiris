@@ -1,0 +1,7 @@
+{
+  "model": "mistral-small3.2",
+  "messages": [
+    { "role": "user", "content": "Reply with exactly: OSIRIS LLM online." }
+  ],
+  "stream": false
+}

@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<?xml-stylesheet type="text/xsl" href="configuration.xsl"?>
+<configuration>
+
+  <!-- ── Metadata store: Postgres (metastore-db) ── -->
+  <property>
+    <name>javax.jdo.option.ConnectionURL</name>
+    <value>jdbc:postgresql://metastore-db:5432/metastore</value>
+  </property>
+  <property>
+    <name>javax.jdo.option.ConnectionDriverName</name>
+    <value>org.postgresql.Driver</value>
+  </property>
+  <property>
+    <name>javax.jdo.option.ConnectionUserName</name>
+    <value>hive</value>
+  </property>
+  <property>
+    <name>javax.jdo.option.ConnectionPassword</name>
+    <value>hive</value>
+  </property>
+  <property>
+    <name>metastore.schema.verification</name>
+    <value>false</value>
+  </property>
+
+  <!-- ── Warehouse on Ozone via the S3 gateway (s3a) ── -->
+  <property>
+    <name>metastore.warehouse.dir</name>
+    <value>s3a://osiris-lake/warehouse</value>
+  </property>
+  <property>
+    <name>hive.metastore.warehouse.dir</name>
+    <value>s3a://osiris-lake/warehouse</value>
+  </property>
+  <property>
+    <name>metastore.thrift.port</name>
+    <value>9083</value>
+  </property>
+
+  <!-- ── S3A -> Ozone S3 gateway ── -->
+  <property>
+    <name>fs.s3a.endpoint</name>
+    <value>http://ozone-s3g:9878</value>
+  </property>
+  <property>
+    <name>fs.s3a.path.style.access</name>
+    <value>true</value>
+  </property>
+  <property>
+    <name>fs.s3a.connection.ssl.enabled</name>
+    <value>false</value>
+  </property>
+  <property>
+    <name>fs.s3a.access.key</name>
+    <value>osiris</value>
+  </property>
+  <property>
+    <name>fs.s3a.secret.key</name>
+    <value>osiris</value>
+  </property>
+  <property>
+    <name>fs.s3a.aws.credentials.provider</name>
+    <value>org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider</value>
+  </property>
+  <property>
+    <name>fs.s3a.impl</name>
+    <value>org.apache.hadoop.fs.s3a.S3AFileSystem</value>
+  </property>
+
+</configuration>
