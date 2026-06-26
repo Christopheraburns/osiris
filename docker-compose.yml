@@ -82,8 +82,14 @@ services:
     environment:
       - SINGLE_USER_CREDENTIALS_USERNAME=admin
       - SINGLE_USER_CREDENTIALS_PASSWORD=osirisadmin1
+      - NIFI_WEB_HTTPS_HOST=0.0.0.0
     volumes:
       - nifi-flow:/opt/nifi/nifi-current/conf
+      - ./nifi/sources.json:/opt/nifi/conf/osiris/sources.json:ro
+      - ./nifi/scripts:/opt/nifi/conf/osiris/scripts:ro
+    depends_on:
+      kafka:
+        condition: service_started
     restart: unless-stopped
     networks:
       - osiris-net

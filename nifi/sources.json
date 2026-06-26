@@ -1,0 +1,27 @@
+{
+  "_comment": "NiFi upstream source catalog. NiFi calls upstream.url directly (not OSIRIS /api/*). transform id selects nifi/scripts/transforms/<id>.groovy before shared normalize.",
+  "sources": [
+    {
+      "name": "earthquakes",
+      "osirisFeed": "earthquakes",
+      "pollMs": 300000,
+      "upstream": {
+        "url": "https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/2.5_day.geojson",
+        "format": "geojson",
+        "transform": "usgs-earthquakes"
+      },
+      "extract": [
+        {
+          "arrayPath": "earthquakes",
+          "domain": "LAND",
+          "entityType": "SEISMIC",
+          "id": "id",
+          "name": "place",
+          "lat": "lat",
+          "lng": "lng",
+          "alt": "depth"
+        }
+      ]
+    }
+  ]
+}
