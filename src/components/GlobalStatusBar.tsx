@@ -35,6 +35,9 @@ const CryptoIcon = ({ symbol }: { symbol: string }) => {
   return null;
 };
 
+/** Bottom-ticker BTC/ETH/SOL prices — set true to poll /api/crypto */
+const FETCH_CRYPTO_TICKER = false;
+
 const formatPrice = (price: number) => {
   if (price >= 1000) return `$${(price / 1000).toFixed(1)}K`;
   if (price < 0.01) return `$${price.toFixed(5)}`;
@@ -51,16 +54,13 @@ export default function GlobalStatusBar() {
   useEffect(() => {
     const fetchData = async () => {
       try {
-        const [cryptoRes, quakeRes] = await Promise.allSettled([
-          fetch('/api/crypto'),
-          fetch('/api/earthquakes'),
-        ]);
-
-        if (cryptoRes.status === 'fulfilled' && cryptoRes.value.ok) {
-          setCrypto(await cryptoRes.value.json());
+        const quakeRes = await fetch('/api/earthquakes');
+        if (FETCH_CRYPTO_TICKER) {
+          const cryptoRes = await fetch('/api/crypto');
+          if (cryptoRes.ok) setCrypto(await cryptoRes.json());
         }
-        if (quakeRes.status === 'fulfilled' && quakeRes.value.ok) {
-          const quakeData = await quakeRes.value.json();
+        if (quakeRes.ok) {
+          const quakeData = await quakeRes.json();
           // Filter to mag >= 4.0 and take top 5 most recent
           const majorQuakes = (quakeData.earthquakes || [])
             .filter((q: Earthquake) => q.magnitude >= 4.0)

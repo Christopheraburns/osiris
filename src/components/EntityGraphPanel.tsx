@@ -6,10 +6,21 @@ import dynamic from 'next/dynamic';
 import {
   X, Maximize2, Minimize2, Loader2, AlertTriangle,
   Plane, Ship, Building2, User, Globe, Newspaper, ShieldAlert,
-  RefreshCw, Network, Wifi
+  RefreshCw, Network, Wifi, Sparkles
 } from 'lucide-react';
 
 const ForceGraph2D = dynamic(() => import('react-force-graph-2d'), { ssr: false });
+
+// GraphRAG question tiers (Phase 1 wired; 2-5 are planned/disabled).
+const INTEL_TIERS = [
+  { n: 1, label: 'ATTRIBUTION', hint: 'Operator, registration country, aircraft type' },
+  { n: 2, label: 'OPERATOR', hint: 'Phase 2 (planned): operator footprint + sanctions' },
+  { n: 3, label: 'SPATIAL', hint: 'Phase 3 (planned): what is nearby right now' },
+  { n: 4, label: 'PATTERN', hint: 'Phase 4 (planned): pattern-of-life from history' },
+  { n: 5, label: 'ANOMALY', hint: 'Phase 5 (planned): anomaly / tipping' },
+];
+
+interface IntelFact { subject: string; predicate: string; object: unknown; source: string; confidence?: unknown; }
 
 // ── TYPES ──
 
@@ -60,6 +71,65 @@ function EntityGraphPanel({ entity, onClose }: Props) {
   const graphRef = useRef<any>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
+  // ── Ask OSIRIS (GraphRAG + local LLM) ──
+  const [intelTier, setIntelTier] = useState<number | null>(null);
+  const [intelAnswer, setIntelAnswer] = useState('');
+  const [intelFacts, setIntelFacts] = useState<IntelFact[]>([]);
+  const [intelLoading, setIntelLoading] = useState(false);
+  const [intelError, setIntelError] = useState<string | null>(null);
+
+  const askIntel = useCallback(async (tier: number) => {
+    if (!entity || entity.type !== 'aircraft' || intelLoading) return;
+    setIntelTier(tier);
+    setIntelAnswer('');
+    setIntelFacts([]);
+    setIntelError(null);
+    setIntelLoading(true);
+    try {
+      const res = await fetch('/api/intel', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          entity: {
+            type: 'aircraft',
+            icao24: entity.properties?.icao24,
+            callsign: entity.id,
+            registration: entity.properties?.registration,
+            model: entity.properties?.model,
+          },
+          tier,
+        }),
+      });
+      if (!res.ok || !res.body) {
+        const b = await res.json().catch(() => ({}));
+        throw new Error(b.error || `HTTP ${res.status}`);
+      }
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buf = '';
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        let idx;
+        while ((idx = buf.indexOf('\n')) >= 0) {
+          const line = buf.slice(0, idx).trim();
+          buf = buf.slice(idx + 1);
+          if (!line) continue;
+          try {
+            const evt = JSON.parse(line);
+            if (evt.type === 'facts') setIntelFacts(evt.facts || []);
+            else if (evt.type === 'token') setIntelAnswer((prev) => prev + evt.text);
+          } catch { /* ignore partial/non-JSON line */ }
+        }
+      }
+    } catch (e) {
+      setIntelError(e instanceof Error ? e.message : 'intel failed');
+    } finally {
+      setIntelLoading(false);
+    }
+  }, [entity, intelLoading]);
+
   const mergeGraph = useCallback((existing: GraphData, incoming: GraphData): GraphData => {
     const nodeMap = new Map<string, EntityNode>();
     for (const n of existing.nodes) nodeMap.set(n.id, n);
@@ -108,6 +178,10 @@ function EntityGraphPanel({ entity, onClose }: Props) {
     setExpandedIds(new Set());
     setSelectedNode(root);
     setError(null);
+    setIntelTier(null);
+    setIntelAnswer('');
+    setIntelFacts([]);
+    setIntelError(null);
     expandEntity(entity.type, entity.id, entity.properties);
   }, [entity]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -269,6 +343,55 @@ function EntityGraphPanel({ entity, onClose }: Props) {
           <div className="px-6 py-2 bg-[#FF1744]/10 border-b border-[#FF1744]/30 flex items-center gap-2 relative z-20 shadow-[inset_0_0_15px_rgba(255,23,68,0.2)]">
             <AlertTriangle className="w-3.5 h-3.5 text-[#FF1744]" />
             <span className="text-[10px] font-mono font-bold tracking-widest text-[#FF1744] uppercase">[ ERR: {error} ]</span>
+          </div>
+        )}
+
+        {/* ASK OSIRIS (GraphRAG + local LLM) — aircraft scenario */}
+        {entity?.type === 'aircraft' && (
+          <div className="px-4 py-3 border-b border-[var(--border-primary)] bg-black/20 relative z-20">
+            <div className="flex items-center gap-2 mb-2">
+              <Sparkles className="w-3.5 h-3.5 text-[var(--cyan-primary)]" />
+              <span className="text-[10px] font-mono font-bold tracking-[0.2em] text-[var(--cyan-primary)]">ASK OSIRIS (AI)</span>
+              {intelLoading && <Loader2 className="w-3 h-3 animate-spin text-[var(--cyan-primary)]" />}
+            </div>
+            <div className="flex flex-wrap gap-1.5 mb-2">
+              {INTEL_TIERS.map((t) => (
+                <button
+                  key={t.n}
+                  disabled={t.n !== 1 || intelLoading}
+                  onClick={() => askIntel(t.n)}
+                  title={t.hint}
+                  className={`px-2 py-1 text-[8px] font-mono tracking-widest border rounded transition-colors ${
+                    t.n === 1
+                      ? 'border-[var(--cyan-primary)]/50 text-[var(--cyan-primary)] hover:bg-[var(--cyan-primary)]/10'
+                      : 'border-white/10 text-white/30 cursor-not-allowed'
+                  } ${intelTier === t.n ? 'bg-[var(--cyan-primary)]/15' : ''}`}
+                >
+                  {t.n}. {t.label}
+                </button>
+              ))}
+            </div>
+            {intelError && (
+              <div className="text-[10px] font-mono font-bold text-[#FF1744] tracking-widest uppercase">[ ERR: {intelError} ]</div>
+            )}
+            {(intelAnswer || (intelLoading && intelTier === 1)) && (
+              <div className="text-[11px] font-mono text-white/90 whitespace-pre-wrap leading-relaxed mt-1">
+                {intelAnswer || '…'}
+              </div>
+            )}
+            {intelFacts.length > 0 && (
+              <div className="mt-2 border-t border-white/5 pt-2">
+                <span className="text-[8px] font-mono text-[var(--gold-primary)]/70 tracking-widest uppercase">Grounded facts</span>
+                <div className="mt-1 space-y-0.5 max-h-28 overflow-y-auto">
+                  {intelFacts.map((f, i) => (
+                    <div key={i} className="text-[9px] font-mono text-white/60 truncate">
+                      <span className="text-white/80">{f.predicate}</span>: {String(f.object)}{' '}
+                      <span className="text-[var(--gold-primary)]/50">[{f.source}]</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         )}
 

@@ -42,8 +42,18 @@ services:
       - PORT=3000
       - HOSTNAME=0.0.0.0
       - RECORDER_URL=http://osiris-recorder:8090
+      - FEEDS_GATEWAY_URL=http://osiris-feeds-gateway:8091
+      - LOGS_PG_HOST=metastore-db
+      - LOGS_PG_PORT=5432
+      - LOGS_PG_USER=hive
+      - LOGS_PG_PASSWORD=hive
+      - LOGS_PG_DB=osiris_logs
+      - LOGS_PG_BOOTSTRAP_DB=metastore
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    depends_on:
+      metastore-db:
+        condition: service_healthy
     restart: unless-stopped
     networks:
       - osiris-net
@@ -265,6 +275,31 @@ services:
     networks:
       - osiris-net
 
+  # ── Flink job submitter / watchdog ──
+  # The session cluster has no HA, so a submitted SQL job is lost on jobmanager
+  # restart. This sidecar ensures the lakehouse tables exist and (re)submits the
+  # streaming Kafka -> Iceberg job (kafka_to_lakehouse.sql) whenever it is absent,
+  # so persistence survives restarts. See flink/job-submitter.sh.
+  flink-job-submitter:
+    image: osiris-flink:latest
+    container_name: flink-job-submitter
+    entrypoint: ["bash", "/opt/job-submitter.sh"]
+    volumes:
+      - ./flink/sql:/opt/sql:ro
+      - ./flink/job-submitter.sh:/opt/job-submitter.sh:ro
+    depends_on:
+      flink-jobmanager:
+        condition: service_started
+      flink-taskmanager:
+        condition: service_started
+      kafka:
+        condition: service_started
+      hive-metastore:
+        condition: service_started
+    restart: unless-stopped
+    networks:
+      - osiris-net
+
   # ── Local LLM (Mistral Small 3.2 24B, 4-bit) served via Ollama on the GPU ──
   # OpenAI-compatible API at http://ollama:11434 (in-cluster) / localhost:11434.
   ollama:
@@ -354,6 +389,52 @@ services:
         condition: service_started
       neo4j:
         condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - osiris-net
+
+  # ── OSIRIS Feeds Gateway (NiFi -> Kafka -> clean feed API) ──
+  # Consumes the osiris.entities stream, reshapes records into feed-shaped JSON,
+  # and serves them to the OSIRIS server in SECURED CONNECTION mode. Runs a
+  # single uvicorn worker so the in-memory snapshot stays coherent. Also the
+  # intended home of the streaming GraphRAG / LLM / MCP layer. See the plan and
+  # services/feeds-gateway/.
+  osiris-feeds-gateway:
+    build:
+      context: ./services/feeds-gateway
+      dockerfile: Dockerfile
+    image: osiris-feeds-gateway:latest
+    container_name: osiris-feeds-gateway
+    environment:
+      KAFKA_BROKERS: kafka:9092
+      OSIRIS_ENTITIES_TOPIC: osiris.entities
+      KAFKA_GROUP_ID: osiris-feeds-gateway
+      FEED_TTL_SECONDS: "3600"
+      LOG_LEVEL: INFO
+      LOGS_PG_HOST: metastore-db
+      LOGS_PG_PORT: "5432"
+      LOGS_PG_USER: hive
+      LOGS_PG_PASSWORD: hive
+      LOGS_PG_DB: osiris_logs
+      LOGS_PG_BOOTSTRAP_DB: metastore
+      # GraphRAG intelligence layer (Neo4j knowledge graph + local Ollama LLM).
+      NEO4J_URI: bolt://neo4j:7687
+      NEO4J_USER: neo4j
+      NEO4J_PASSWORD: ${NEO4J_PASSWORD:-osirisgraph1}
+      OLLAMA_URL: http://ollama:11434
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-mistral-small3.2:latest}
+      INTEL_RESOLVER_URL: http://osiris-intel:4000
+    expose:
+      - "8091"
+    depends_on:
+      kafka:
+        condition: service_started
+      metastore-db:
+        condition: service_healthy
+      neo4j:
+        condition: service_healthy
+      ollama:
+        condition: service_started
     restart: unless-stopped
     networks:
       - osiris-net

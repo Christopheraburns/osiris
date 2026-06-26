@@ -1,0 +1,10 @@
+# OSIRIS Feeds Gateway — pinned for reproducible (air-gapped) image builds.
+# Async ASGI stack: chosen over Flask/gunicorn because this service will also
+# host streaming GraphRAG / LLM / MCP endpoints.
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+aiokafka==0.12.0
+pydantic==2.10.4
+psycopg[binary]==3.2.3
+neo4j==5.28.1
+httpx==0.28.1

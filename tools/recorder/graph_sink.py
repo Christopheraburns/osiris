@@ -71,6 +71,29 @@ def _org_id(name: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", str(name).strip().lower()).strip("-")
 
 
+# ICAO aircraft registration-prefix -> country (subset; mirrors intel/server.js
+# and services/feeds-gateway/reg_prefixes.py). Used to derive REGISTERED_IN.
+_REG_PREFIXES = {
+    "N": "United States", "G": "United Kingdom", "F": "France", "D": "Germany", "I": "Italy",
+    "JA": "Japan", "HL": "South Korea", "B": "China", "VT": "India", "TC": "Turkey",
+    "SU": "Russia", "RA": "Russia", "UR": "Ukraine", "A6": "UAE", "A7": "Qatar", "9V": "Singapore",
+    "VH": "Australia", "C": "Canada", "PP": "Brazil", "PR": "Brazil", "PT": "Brazil",
+    "EC": "Spain", "PH": "Netherlands", "HS": "Thailand", "9M": "Malaysia", "PK": "Pakistan",
+    "EP": "Iran", "YI": "Iraq", "HZ": "Saudi Arabia", "4X": "Israel", "SX": "Greece",
+    "OE": "Austria", "HB": "Switzerland", "SE": "Sweden", "OH": "Finland", "LN": "Norway",
+    "OY": "Denmark", "OO": "Belgium", "CS": "Portugal", "SP": "Poland",
+    "OK": "Czech Republic", "HA": "Hungary", "YR": "Romania", "LZ": "Bulgaria",
+    "EI": "Ireland", "EW": "Belarus", "ES": "Estonia", "YL": "Latvia", "LY": "Lithuania",
+}
+
+
+def _country_from_reg(registration) -> str | None:
+    if not isinstance(registration, str) or not registration.strip():
+        return None
+    reg = registration.upper().strip()
+    return _REG_PREFIXES.get(reg[:2]) or _REG_PREFIXES.get(reg[:1])
+
+
 def _dedupe(rows: list[dict], key: str) -> list[dict]:
     """Last-wins dedupe by merge key — avoids the UNWIND+MERGE duplicate pitfall."""
     out: dict[str, dict] = {}
@@ -119,10 +142,64 @@ class GraphSink:
                     s.execute_write(self._merge_nodes, list(labels), key_prop, rs)
                     counts["nodes"] += len(rs)
                     counts["edges"] += s.execute_write(self._promote_actors, list(labels), key_prop, rs)
+                    if list(labels) == ["Aircraft"]:
+                        counts["edges"] += s.execute_write(self._enrich_aircraft, key_prop, rs)
                 except Exception as exc:  # noqa: BLE001 — one bad group must not abort the rest
                     counts["skipped"] += len(rs)
                     counts["last_error"] = f"{labels}: {exc}"
         return counts
+
+    @staticmethod
+    def _enrich_aircraft(tx, key_prop: str, rows: list[dict]) -> int:
+        """Set registration/model/subtype on Aircraft + derive REGISTERED_IN."""
+        attrs, regs = [], []
+        for r in rows:
+            try:
+                original = json.loads(r.get("properties") or "{}")
+            except (TypeError, ValueError):
+                original = {}
+            if not isinstance(original, dict):
+                original = {}
+            registration = original.get("registration") or original.get("reg")
+            model = original.get("model") or original.get("aircraft_type") or original.get("type")
+            attrs.append({
+                "k": r["_k"],
+                "registration": registration if isinstance(registration, str) else None,
+                "model": model if isinstance(model, str) else None,
+                "subtype": r.get("entity_type"),
+            })
+            country = _country_from_reg(registration)
+            if country:
+                regs.append({
+                    "k": r["_k"], "iso": _org_id(country), "country": country,
+                    "feed": r.get("feed"), "confidence": r.get("confidence"),
+                })
+
+        if attrs:
+            tx.run(
+                f"""
+                UNWIND $rows AS row
+                MATCH (n:Aircraft {{{key_prop}: row.k}})
+                SET n.registration = coalesce(row.registration, n.registration),
+                    n.model        = coalesce(row.model, n.model),
+                    n.subtype      = coalesce(row.subtype, n.subtype)
+                """,
+                rows=attrs,
+            )
+        edges = 0
+        if regs:
+            tx.run(
+                f"""
+                UNWIND $rows AS row
+                MATCH (n:Aircraft {{{key_prop}: row.k}})
+                MERGE (c:Country {{iso: row.iso}}) ON CREATE SET c.name = row.country
+                MERGE (n)-[e:REGISTERED_IN]->(c)
+                  SET e.feed = row.feed, e.derivedBy = 'derived', e.confidence = row.confidence
+                """,
+                rows=regs,
+            )
+            edges += len(regs)
+        return edges
 
     @staticmethod
     def _merge_nodes(tx, labels: list[str], key_prop: str, rows: list[dict]) -> None:

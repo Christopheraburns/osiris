@@ -8,5 +8,7 @@ CREATE CATALOG osiris_iceberg WITH (
   'warehouse' = 's3a://osiris-lake/warehouse'
 );
 
-SELECT domain, COUNT(*) AS n FROM osiris_iceberg.lake.entities GROUP BY domain;
-SELECT COUNT(*) AS total_rows FROM osiris_iceberg.lake.entities;
+-- Bronze (every message) and the two silver tables written by kafka_to_lakehouse.sql.
+SELECT COUNT(*) AS raw_records FROM osiris_iceberg.lake.raw_records;
+SELECT feed, COUNT(*) AS n FROM osiris_iceberg.lake.events GROUP BY feed;
+SELECT COUNT(*) AS observations FROM osiris_iceberg.lake.observations;

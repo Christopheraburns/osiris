@@ -1,11 +1,9 @@
 <div align="center">
 
-# ⬡ OSIRIS
+# OSINT
 
-### Open Source Intelligence & Reconnaissance Integrated System
+### Open Source Intelligence Platform
 
-[![Live Demo](https://img.shields.io/badge/osirisai.live-00E5FF?style=for-the-badge&logo=vercel&logoColor=white)](https://osirislive.app)
-[![Support OSIRIS](https://img.shields.io/badge/Support_Project-Patreon-FF424D?style=for-the-badge&logo=patreon&logoColor=white)](https://www.patreon.com/posts/159077425)
 [![Next.js](https://img.shields.io/badge/Next.js-16-black?style=for-the-badge&logo=next.js)](https://nextjs.org)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5-3178C6?style=for-the-badge&logo=typescript&logoColor=white)](https://typescriptlang.org)
 [![MapLibre](https://img.shields.io/badge/MapLibre_GL-GPU_Rendered-396CB2?style=for-the-badge)](https://maplibre.org)
@@ -13,15 +11,31 @@
 
 **A real-time global intelligence dashboard that aggregates live flight tracking, CCTV networks, earthquake monitoring, conflict zone mapping, and 24/7 news feeds into a single GPU-accelerated interface.**
 
-[Live Demo](https://osirisai.live) · [Report Bug](https://github.com/simplifaisoul/osiris/issues) · [Request Feature](https://github.com/simplifaisoul/osiris/issues) · [Join Discord](https://discord.gg/umBykEpb98)
+[Report Bug](https://github.com/simplifaisoul/osiris/issues) · [Architecture](docs/architecture.md) · [Lakehouse Recorder](docs/lakehouse-recorder.md)
 
 </div>
 
 ---
 
+## Based on OSIRIS
+
+**OSINT** is a customized deployment built on **[OSIRIS](https://github.com/simplifaisoul/osiris)** — the *Open Source Intelligence & Reconnaissance Integrated System* by **[simplifaisoul](https://github.com/simplifaisoul)**.
+
+| | |
+|---|---|
+| **Upstream repository** | [github.com/simplifaisoul/osiris](https://github.com/simplifaisoul/osiris) |
+| **Upstream live demo** | [osirisai.live](https://osirisai.live) |
+| **Upstream license** | [MIT](LICENSE) — Copyright (c) simplifaisoul |
+
+This fork extends the upstream codebase with a lakehouse backend (Kafka, NiFi, Flink, Iceberg, Neo4j, Ollama), an optional data recorder, and project-specific UI and ingest changes. Core dashboard capabilities, API routes, and the RECON toolkit inherit from OSIRIS.
+
+If you use or redistribute this work, please retain the upstream MIT license notice and credit the [OSIRIS project](https://github.com/simplifaisoul/osiris).
+
+---
+
 ## Overview
 
-Osiris is a production-grade OSINT platform that provides situational awareness across multiple intelligence domains. Built with Next.js 16 and MapLibre GL, every data point is rendered via WebGL for 60fps performance even with thousands of concurrent entities on-screen.
+OSINT is a production-grade OSINT platform that provides situational awareness across multiple intelligence domains. Built with Next.js 16 and MapLibre GL, every data point is rendered via WebGL for 60fps performance even with thousands of concurrent entities on-screen.
 
 ### Key Capabilities
 
@@ -47,7 +61,7 @@ Osiris is a production-grade OSINT platform that provides situational awareness 
 
 ```
 ┌─────────────────────────────────────────────────┐
-│                  OSIRIS CLIENT                   │
+│                  OSINT CLIENT                    │
 │  ┌──────────┐  ┌──────────┐  ┌───────────────┐ │
 │  │ MapLibre  │  │  HUD     │  │  RECON Toolkit│ │
 │  │  GL (GPU) │  │ Panels   │  │  Port Scan    │ │
@@ -77,28 +91,28 @@ Osiris is a production-grade OSINT platform that provides situational awareness 
 
 Full write-up: **[docs/architecture.md](docs/architecture.md)**.
 
-**Original — OSIRIS calls the APIs directly:**
+**Connected mode — OSINT calls APIs directly (upstream OSIRIS pattern):**
 
 ```mermaid
 flowchart LR
   ext["External public APIs<br/>(adsb.lol, celestrak, USGS,<br/>NASA FIRMS, GDELT, ...)"]
-  osiris["OSIRIS server<br/>(Next.js /api/* routes)"]
+  osint["OSINT server<br/>(Next.js /api/* routes)"]
   cache["osiris-cache<br/>(nginx)"]
   ui["Browser dashboard<br/>(MapLibre)"]
 
-  ext -->|"fetch on request/poll"| osiris
-  osiris --> cache
+  ext -->|"fetch on request/poll"| osint
+  osint --> cache
   cache --> ui
 ```
 
-**Refactored — streaming + lakehouse + knowledge graph + LLM:**
+**Extended stack — streaming + lakehouse + knowledge graph + LLM:**
 
 ```mermaid
 flowchart LR
   ext["External public APIs"]
   nifi["NiFi<br/>(collect + append provenance)"]
   kafka["Kafka<br/>(topic osiris.entities)"]
-  osiris["OSIRIS server + dashboard<br/>(consumes live stream)"]
+  osint["OSINT server + dashboard<br/>(consumes live stream)"]
   flink["Flink<br/>(Kafka to Iceberg + graph projection)"]
 
   subgraph lakehouse [Lakehouse backend - system of record]
@@ -113,7 +127,7 @@ flowchart LR
   llm["Ollama LLM<br/>(Mistral Small 3.2 24B,<br/>GraphRAG)"]
 
   ext --> nifi --> kafka
-  kafka -->|"live feed"| osiris
+  kafka -->|"live feed"| osint
   kafka -->|"stream"| flink
   flink -->|"write data files (s3a)"| iceberg
   flink -->|"catalog ops"| hms
@@ -123,7 +137,7 @@ flowchart LR
   iceberg -. "rebuild projection" .-> neo4j
   neo4j -->|"graph queries (Cypher)"| llm
   iceberg -->|"history retrieval"| llm
-  llm -->|"grounded answers"| osiris
+  llm -->|"grounded answers"| osint
 ```
 
 ---
@@ -185,7 +199,7 @@ flowchart LR
 ## Quick Start
 
 ```bash
-git clone https://github.com/simplifaisoul/osiris.git
+git clone <your-repository-url>
 cd osiris
 npm install
 npm run dev
@@ -196,7 +210,7 @@ Open [http://localhost:3000](http://localhost:3000)
 ### Docker / Self-Hosting
 
 ```bash
-git clone https://github.com/simplifaisoul/osiris.git
+git clone <your-repository-url>
 cd osiris
 cp .env.template .env     # optional — configure keys / port
 docker compose up -d
@@ -208,7 +222,7 @@ carries CasaOS app metadata (`x-casaos:`) for one-click install on
 [CasaOS](https://casaos.io). See **[DOCKER.md](DOCKER.md)** for the full Docker,
 CasaOS and API-key guide.
 
-**Prebuilt image (GHCR)** — skip the build and pull it directly:
+**Upstream prebuilt image (GHCR)** — from the original OSIRIS project:
 
 ```bash
 docker pull ghcr.io/aiacos/osiris:latest
@@ -221,7 +235,7 @@ editing the compose file.
 
 ### Environment Variables
 
-OSIRIS works **partially without any API keys** — all core feeds use public,
+OSINT works **partially without any API keys** — all core feeds use public,
 keyless sources. Copy [`.env.template`](.env.template) to `.env` and set only
 what you need:
 
@@ -257,7 +271,7 @@ AIS_API_KEY=                 # aisstream.io maritime
 | Animations | Framer Motion |
 | Icons | Lucide React |
 | Styling | Custom CSS Design System |
-| Deployment | Vercel Edge Network |
+| Deployment | Vercel Edge Network / Docker Compose |
 
 ---
 
@@ -275,24 +289,14 @@ AIS_API_KEY=                 # aisstream.io maritime
 
 ## License
 
-MIT — see [LICENSE](LICENSE) for details.
+This project is based on [OSIRIS](https://github.com/simplifaisoul/osiris), which is released under the **MIT License** — see [LICENSE](LICENSE) for the upstream copyright (simplifaisoul) and terms.
 
 ---
 
 <div align="center">
 
-**🛠️ SUPPORT THE OSIRIS PROJECT**
-The OSIRIS Global Intelligence Grid is entirely open-source, but running the backend scanners and data firehoses isn't cheap.
+**Attribution**
 
-If you want to help keep the servers alive, and support us to get access to better tools  unlock the **Special OSIRIS Console**, Currently Just a Cool UI. a you can officially support the project here : 
-
-🔗 [Support OSIRIS on Patreon](https://www.patreon.com/posts/159077425)
-
-*Supporters receive the `🔴 RedTeam Console` role and access to encrypted developer comms.*
-
-
-**Built by [simplifaisoul](https://github.com/simplifaisoul)**
-
-[Join our Discord to be a part of this movement!](https://discord.gg/umBykEpb98)
+OSINT is derived from **[OSIRIS](https://github.com/simplifaisoul/osiris)** by **[simplifaisoul](https://github.com/simplifaisoul)** · [Live demo](https://osirisai.live)
 
 </div>
