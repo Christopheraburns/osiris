@@ -43,6 +43,7 @@ services:
       - HOSTNAME=0.0.0.0
       - RECORDER_URL=http://osiris-recorder:8090
       - FEEDS_GATEWAY_URL=http://osiris-feeds-gateway:8091
+      - INTEL_URL=http://osiris-intel:4000
       - LOGS_PG_HOST=metastore-db
       - LOGS_PG_PORT=5432
       - LOGS_PG_USER=hive
@@ -54,6 +55,8 @@ services:
     depends_on:
       metastore-db:
         condition: service_healthy
+      osiris-intel:
+        condition: service_started
     restart: unless-stopped
     networks:
       - osiris-net

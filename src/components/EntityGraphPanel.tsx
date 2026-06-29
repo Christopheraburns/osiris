@@ -77,6 +77,7 @@ function EntityGraphPanel({ entity, onClose }: Props) {
   const [intelFacts, setIntelFacts] = useState<IntelFact[]>([]);
   const [intelLoading, setIntelLoading] = useState(false);
   const [intelError, setIntelError] = useState<string | null>(null);
+  const [enrichNotice, setEnrichNotice] = useState<string | null>(null);
 
   const askIntel = useCallback(async (tier: number) => {
     if (!entity || entity.type !== 'aircraft' || intelLoading) return;
@@ -160,8 +161,13 @@ function EntityGraphPanel({ entity, onClose }: Props) {
       if (properties?.model) params.set('model', properties.model);
       if (properties?.icao24) params.set('icao24', properties.icao24);
       const res = await fetch(`/api/entity/expand?${params}`, { cache: 'no-store' });
-      if (!res.ok) { const b = await res.json().catch(() => ({})); throw new Error(b.error || `HTTP ${res.status}`); }
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data.error || `HTTP ${res.status}`);
+      }
+      if (data.unavailable) {
+        setEnrichNotice('External enrichment (osiris-intel) is unavailable — showing selected entity only.');
+      }
       setGraphData(prev => mergeGraph(prev, { nodes: data.nodes || [], links: data.links || [] }));
       setExpandedIds(prev => new Set([...prev, key]));
     } catch (e) { setError(e instanceof Error ? e.message : 'Expansion failed'); }
@@ -178,6 +184,7 @@ function EntityGraphPanel({ entity, onClose }: Props) {
     setExpandedIds(new Set());
     setSelectedNode(root);
     setError(null);
+    setEnrichNotice(null);
     setIntelTier(null);
     setIntelAnswer('');
     setIntelFacts([]);
@@ -343,6 +350,14 @@ function EntityGraphPanel({ entity, onClose }: Props) {
           <div className="px-6 py-2 bg-[#FF1744]/10 border-b border-[#FF1744]/30 flex items-center gap-2 relative z-20 shadow-[inset_0_0_15px_rgba(255,23,68,0.2)]">
             <AlertTriangle className="w-3.5 h-3.5 text-[#FF1744]" />
             <span className="text-[10px] font-mono font-bold tracking-widest text-[#FF1744] uppercase">[ ERR: {error} ]</span>
+          </div>
+        )}
+
+        {/* Enrichment unavailable (non-blocking) */}
+        {enrichNotice && !error && (
+          <div className="px-6 py-2 bg-[#FF9500]/10 border-b border-[#FF9500]/30 flex items-center gap-2 relative z-20">
+            <AlertTriangle className="w-3.5 h-3.5 text-[#FF9500]" />
+            <span className="text-[10px] font-mono tracking-widest text-[#FF9500] uppercase">{enrichNotice}</span>
           </div>
         )}
 

@@ -55,6 +55,17 @@ export async function GET(req: Request) {
 
     if (!res.ok) {
       const body = await res.json().catch(() => ({}));
+      if (res.status >= 500) {
+        return NextResponse.json(
+          {
+            nodes: [],
+            links: [],
+            unavailable: true,
+            error: body.error || `Intel layer returned ${res.status}`,
+          },
+          { status: 200 },
+        );
+      }
       return NextResponse.json(
         { error: body.error || `Intel layer returned ${res.status}`, nodes: [], links: [] },
         { status: res.status },
@@ -67,9 +78,15 @@ export async function GET(req: Request) {
     });
   } catch (e) {
     console.error('[OSIRIS] Intel proxy error:', e instanceof Error ? e.message : e);
+    // Degrade gracefully: panel still opens with the selected entity root node.
     return NextResponse.json(
-      { error: 'Intelligence layer unavailable', nodes: [], links: [] },
-      { status: 502 },
+      {
+        nodes: [],
+        links: [],
+        unavailable: true,
+        error: 'Intelligence layer unavailable',
+      },
+      { status: 200 },
     );
   }
 }

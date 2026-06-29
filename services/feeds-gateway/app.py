@@ -99,6 +99,39 @@ async def intel_health() -> JSONResponse:
     )
 
 
+@app.get("/llm/health")
+async def llm_health() -> JSONResponse:
+    return JSONResponse(
+        {
+            "status": "ok",
+            "ollama": await llm.available(),
+            "model": llm.OLLAMA_MODEL,
+            "ollama_url": llm.OLLAMA_URL,
+            "timestamp": _now_iso(),
+        }
+    )
+
+
+@app.post("/llm/chat")
+async def llm_chat(request: Request) -> StreamingResponse:
+    """Raw prompt test endpoint for the LLM UI. Streams NDJSON token events."""
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail="invalid json")
+
+    prompt = (body.get("prompt") or "").strip()
+    if not prompt:
+        raise HTTPException(status_code=400, detail="prompt is required")
+    system = body.get("system")
+
+    return StreamingResponse(
+        llm.prompt_stream(prompt, system),
+        media_type="application/x-ndjson",
+        headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
+    )
+
+
 @app.post("/intel/ask")
 async def intel_ask(request: Request) -> StreamingResponse:
     """GraphRAG Q&A for a selected entity. Streams NDJSON events.
