@@ -14,7 +14,7 @@ Wait ~30s for NiFi HTTPS on https://localhost:8443/nifi/ (login: `admin` / `osir
 Create Kafka topic (once):
 
 ```powershell
-docker exec kafka /opt/kafka/bin/kafka-topics.sh --create --if-not-exists `
+docker exec osiris-kafka /opt/kafka/bin/kafka-topics.sh --create --if-not-exists `
   --topic osiris.entities --bootstrap-server localhost:9092 `
   --partitions 1 --replication-factor 1
 ```
@@ -41,7 +41,7 @@ Scripts mounted at `/opt/nifi/conf/osiris/scripts/` from [`scripts/`](scripts/).
 ## Verify Kafka output
 
 ```powershell
-docker exec kafka /opt/kafka/bin/kafka-console-consumer.sh `
+docker exec osiris-kafka /opt/kafka/bin/kafka-console-consumer.sh `
   --bootstrap-server localhost:9092 --topic osiris.entities `
   --from-beginning --max-messages 3
 ```

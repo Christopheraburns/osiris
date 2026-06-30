@@ -16,7 +16,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY *.py ./
 
 # Defaults; override in docker-compose.
-ENV KAFKA_BROKERS=kafka:9092 \
+ENV KAFKA_BROKERS=osiris-kafka:9092 \
     OSIRIS_ENTITIES_TOPIC=osiris.entities \
     KAFKA_GROUP_ID=osiris-feeds-gateway \
     FEED_TTL_SECONDS=3600 \

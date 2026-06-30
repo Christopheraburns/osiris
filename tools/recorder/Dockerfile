@@ -18,12 +18,12 @@ COPY endpoints.json ./
 
 # Defaults; override in docker-compose.
 ENV OSIRIS_BASE_URL=http://osiris:3000 \
-    ICEBERG_URI=thrift://hive-metastore:9083 \
+    ICEBERG_URI=thrift://osiris-hive-metastore:9083 \
     ICEBERG_WAREHOUSE=s3a://osiris-lake/warehouse \
-    S3_ENDPOINT=http://ozone-s3g:9878 \
+    S3_ENDPOINT=http://osiris-ozone-s3g:9878 \
     S3_ACCESS_KEY=osiris \
     S3_SECRET_KEY=osiris \
-    NEO4J_URI=bolt://neo4j:7687 \
+    NEO4J_URI=bolt://osiris-neo4j:7687 \
     NEO4J_USER=neo4j \
     CONTROL_PORT=8090 \
     MODE=idle \

@@ -4,7 +4,7 @@ SET 'sql-client.execution.result-mode' = 'tableau';
 CREATE CATALOG osiris_iceberg WITH (
   'type' = 'iceberg',
   'catalog-type' = 'hive',
-  'uri' = 'thrift://hive-metastore:9083',
+  'uri' = 'thrift://osiris-hive-metastore:9083',
   'warehouse' = 's3a://osiris-lake/warehouse'
 );
 

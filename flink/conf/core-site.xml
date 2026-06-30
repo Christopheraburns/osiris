@@ -4,7 +4,7 @@
   <!-- S3A -> Ozone S3 gateway, used by Iceberg HadoopFileIO from Flink -->
   <property>
     <name>fs.s3a.endpoint</name>
-    <value>http://ozone-s3g:9878</value>
+    <value>http://osiris-ozone-s3g:9878</value>
   </property>
   <property>
     <name>fs.s3a.path.style.access</name>

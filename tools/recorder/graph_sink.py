@@ -107,7 +107,7 @@ def _dedupe(rows: list[dict], key: str) -> list[dict]:
 
 class GraphSink:
     def __init__(self) -> None:
-        uri = os.environ.get("NEO4J_URI", "bolt://neo4j:7687")
+        uri = os.environ.get("NEO4J_URI", "bolt://osiris-neo4j:7687")
         user = os.environ.get("NEO4J_USER", "neo4j")
         pwd = os.environ.get("NEO4J_PASSWORD", "osirisgraph1")
         self.driver = GraphDatabase.driver(uri, auth=(user, pwd))

@@ -26,8 +26,8 @@
 --    }
 --
 --  Submit:
---    docker compose cp flink/sql/kafka_to_lakehouse.sql flink-jobmanager:/tmp/kafka_to_lakehouse.sql
---    docker compose exec flink-jobmanager ./bin/sql-client.sh -f /tmp/kafka_to_lakehouse.sql
+--    docker compose cp flink/sql/kafka_to_lakehouse.sql osiris-flink-jobmanager:/tmp/kafka_to_lakehouse.sql
+--    docker compose exec osiris-flink-jobmanager ./bin/sql-client.sh -f /tmp/kafka_to_lakehouse.sql
 -- ════════════════════════════════════════════════════════════════════════
 
 -- Feeds emit UTC ISO-8601; interpret naive timestamps as UTC.
@@ -38,7 +38,7 @@ SET 'pipeline.name' = 'osiris-kafka-to-lakehouse';
 CREATE CATALOG osiris_iceberg WITH (
   'type' = 'iceberg',
   'catalog-type' = 'hive',
-  'uri' = 'thrift://hive-metastore:9083',
+  'uri' = 'thrift://osiris-hive-metastore:9083',
   'warehouse' = 's3a://osiris-lake/warehouse'
 );
 
@@ -48,7 +48,7 @@ CREATE TEMPORARY TABLE kafka_src (
 ) WITH (
   'connector' = 'kafka',
   'topic' = 'osiris.entities',
-  'properties.bootstrap.servers' = 'kafka:9092',
+  'properties.bootstrap.servers' = 'osiris-kafka:9092',
   'properties.group.id' = 'flink-lakehouse',
   'scan.startup.mode' = 'earliest-offset',
   'format' = 'raw'

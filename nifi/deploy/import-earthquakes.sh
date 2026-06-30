@@ -118,7 +118,7 @@ put_proc "$KAFKA_ID" "$KAFKA_VER" "{
     \"id\": \"$KAFKA_ID\",
     \"config\": {
       \"properties\": {
-        \"Kafka Brokers\": \"kafka:9092\",
+        \"Kafka Brokers\": \"osiris-kafka:9092\",
         \"Topic Name\": \"osiris.entities\",
         \"Delivery Guarantee\": \"1\",
         \"Use Transactions\": \"false\",

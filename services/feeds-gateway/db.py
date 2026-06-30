@@ -22,7 +22,7 @@ import psycopg
 log = logging.getLogger("feeds-gateway.db")
 
 PG = {
-    "host": os.environ.get("LOGS_PG_HOST", "metastore-db"),
+    "host": os.environ.get("LOGS_PG_HOST", "osiris-metastore-db"),
     "port": int(os.environ.get("LOGS_PG_PORT", "5432")),
     "user": os.environ.get("LOGS_PG_USER", "hive"),
     "password": os.environ.get("LOGS_PG_PASSWORD", "hive"),

@@ -106,7 +106,7 @@ Set-Proc $scr @{
 $kafka = New-Proc "Publish osiris.entities" "org.apache.nifi.processors.kafka.publish.PublishKafka" "nifi-kafka-nar" 1200 200
 Set-Proc $kafka @{
     properties = @{
-        "Kafka Brokers" = "kafka:9092"; "Topic Name" = "osiris.entities"
+        "Kafka Brokers" = "osiris-kafka:9092"; "Topic Name" = "osiris.entities"
         "Delivery Guarantee" = "1"; "Use Transactions" = "false"
         "Message Key Field" = "kafka.key"; "Character Set" = "UTF-8"
     }

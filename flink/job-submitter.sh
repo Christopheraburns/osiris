@@ -23,7 +23,7 @@ CHECK_INTERVAL="${CHECK_INTERVAL:-30}"
 export FLINK_CONF_DIR=/tmp/flink-conf
 cp -r /opt/flink/conf "$FLINK_CONF_DIR"
 {
-  echo "rest.address: flink-jobmanager"
+  echo "rest.address: osiris-flink-jobmanager"
   echo "rest.port: 8081"
 } >> "$FLINK_CONF_DIR/config.yaml"
 
@@ -31,6 +31,32 @@ log() { echo "[job-submitter] $(date -u +%Y-%m-%dT%H:%M:%SZ) $*"; }
 
 job_present() {
   /opt/flink/bin/flink list 2>/dev/null | grep -q "$JOB_NAME"
+}
+
+lakehouse_tables_exist() {
+  local out
+  out=$(/opt/flink/bin/sql-client.sh -e "SHOW TABLES IN osiris_iceberg.lake;" 2>&1) || return 1
+  echo "$out" | grep -q raw_records
+}
+
+ensure_ddl() {
+  log "ensuring lakehouse tables (DDL)"
+  local out
+  out=$(/opt/flink/bin/sql-client.sh -f "$DDL_SQL" 2>&1) || true
+  echo "$out"
+
+  if echo "$out" | grep -qiE 'MetaException|\[ERROR\]'; then
+    log "DDL reported errors (is s3://osiris-lake created? run scripts/bootstrap-lakehouse.sh)"
+    return 1
+  fi
+
+  if lakehouse_tables_exist; then
+    log "lakehouse tables verified (raw_records present)"
+    return 0
+  fi
+
+  log "DDL finished but raw_records not found in catalog"
+  return 1
 }
 
 # ── Wait for the jobmanager REST to come up ──
@@ -56,11 +82,10 @@ while true; do
   log "job '$JOB_NAME' not found — (re)submitting"
 
   if [ "$ddl_done" -eq 0 ]; then
-    log "ensuring lakehouse tables (DDL)"
-    if /opt/flink/bin/sql-client.sh -f "$DDL_SQL"; then
+    if ensure_ddl; then
       ddl_done=1
     else
-      log "DDL failed; will retry"
+      log "DDL not ready; will retry"
       sleep "$CHECK_INTERVAL"
       continue
     fi

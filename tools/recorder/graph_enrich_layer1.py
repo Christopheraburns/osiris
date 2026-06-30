@@ -15,7 +15,7 @@ It is idempotent: it MERGEs Country nodes on the same `iso` key the recorder
 uses (org-id slug of the country name) and MERGEs REGISTERED_IN edges, so it is
 safe to re-run and converges with a normal recorder rebuild.
 
-Run it from inside the stack (so `neo4j:7687` resolves), e.g.:
+Run it from inside the stack (so `osiris-neo4j:7687` resolves), e.g.:
 
     docker compose exec osiris-recorder python /app/graph_enrich_layer1.py
     # or copy in first:
@@ -101,7 +101,7 @@ def country_from_reg(registration) -> str | None:
 
 
 def main() -> None:
-    uri = os.environ.get("NEO4J_URI", "bolt://neo4j:7687")
+    uri = os.environ.get("NEO4J_URI", "bolt://osiris-neo4j:7687")
     user = os.environ.get("NEO4J_USER", "neo4j")
     pwd = os.environ.get("NEO4J_PASSWORD", "osirisgraph1")
     driver = GraphDatabase.driver(uri, auth=(user, pwd))
