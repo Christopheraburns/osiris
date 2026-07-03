@@ -1,6 +1,6 @@
 
 import { NextResponse } from 'next/server';
-
+import { shouldUseGateway, securedProxy } from '@/lib/connectionMode';
 export const dynamic = 'force-dynamic';
 
 /**
@@ -9,6 +9,15 @@ export const dynamic = 'force-dynamic';
  */
 
 export async function GET() {
+  
+  if (shouldUseGateway('fires')) {
+    const data = await securedProxy<{ fires: unknown[]; total: number }>(
+      '/feeds/fires',
+      { fires: [], total: 0 },
+    );
+    return NextResponse.json(data, { headers: { 'Cache-Control': 'no-store' } });
+  }
+
   try {
     let fires: any[] = [];
     let source = '';

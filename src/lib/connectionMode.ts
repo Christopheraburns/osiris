@@ -18,6 +18,8 @@ const globalForMode = globalThis as unknown as {
   __osirisConnectionMode?: ConnectionModeState;
 };
 
+
+
 function state(): ConnectionModeState {
   if (!globalForMode.__osirisConnectionMode) {
     globalForMode.__osirisConnectionMode = { secured: false };
@@ -26,7 +28,8 @@ function state(): ConnectionModeState {
 }
 
 /** Feeds that have a NiFi -> Kafka -> gateway path. Extend as feeds migrate. */
-export const MIGRATED_FEEDS = ['earthquakes'] as const;
+/*export const MIGRATED_FEEDS = ['earthquakes'] as const;*/
+export const MIGRATED_FEEDS = ['earthquakes', 'fires', 'weather'] as const;
 export type MigratedFeed = (typeof MIGRATED_FEEDS)[number];
 
 export function isSecured(): boolean {

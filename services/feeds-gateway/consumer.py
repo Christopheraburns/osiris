@@ -26,7 +26,7 @@ from registry import ENTITY_TYPE_TO_FEED, FEEDS, RESPONSE_KEY_TO_FEED
 log = logging.getLogger("feeds-gateway.consumer")
 
 KAFKA_BROKERS = os.environ.get("KAFKA_BROKERS", "kafka:9092")
-ENTITIES_TOPIC = os.environ.get("OSIRIS_ENTITIES_TOPIC", "osiris.entities")
+ENTITIES_TOPIC = os.environ.get("OSIRIS_ENTITIES_TOPIC", "osiris-entities")
 FEED_TTL_SECONDS = float(os.environ.get("FEED_TTL_SECONDS", "3600"))
 GROUP_ID = os.environ.get("KAFKA_GROUP_ID", "osiris-feeds-gateway")
 
@@ -186,10 +186,23 @@ async def _ingest_record(store: FeedStore, rec: dict, counter: list[int]) -> Non
 async def consume_loop(store: FeedStore, stop: asyncio.Event) -> None:
     """Connect (with retry) and consume until ``stop`` is set."""
     while not stop.is_set():
+        #consumer = AIOKafkaConsumer(
+        #    ENTITIES_TOPIC,
+        #    bootstrap_servers=KAFKA_BROKERS,
+        #    group_id=GROUP_ID,
+        #    enable_auto_commit=True,
+        #    auto_offset_reset="latest",
+        #    value_deserializer=lambda b: _safe_json(b),
+        #)
         consumer = AIOKafkaConsumer(
             ENTITIES_TOPIC,
             bootstrap_servers=KAFKA_BROKERS,
             group_id=GROUP_ID,
+            security_protocol="SASL_SSL",
+            sasl_mechanism="PLAIN",
+            sasl_plain_username="cburns" #os.environ["KAFKA_USER"],      # workload username
+            sasl_plain_password="SuperSecret#1" #os.environ["KAFKA_PASSWORD"],  # workload password
+            ssl_context=ssl.create_default_context(),
             enable_auto_commit=True,
             auto_offset_reset="latest",
             value_deserializer=lambda b: _safe_json(b),

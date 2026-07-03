@@ -1,0 +1,41 @@
+# Base on a Cloudera PBJ Workbench runtime (satisfies the CAI runtime contract)
+FROM docker.repository.cloudera.com/cloudera/cdsw/ml-runtime-pbj-workbench-python3.11-standard:2026.04.1-b7
+
+USER root
+
+# --- Install Memgraph (pin the version; use the Ubuntu .deb) ---
+ARG MEMGRAPH_VERSION=3.11.0
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends curl ca-certificates libatomic1 \
+ && curl -fL -o /tmp/memgraph.deb \
+      "https://download.memgraph.com/memgraph/v${MEMGRAPH_VERSION}/ubuntu-24.04/memgraph_${MEMGRAPH_VERSION}-1_amd64.deb" \
+ && apt-get install -y --no-install-recommends /tmp/memgraph.deb \
+ && rm -f /tmp/memgraph.deb \
+ && test -x /usr/lib/memgraph/memgraph \
+ && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# Python driver for the HTTP shim + loader (talks Bolt to localhost)
+RUN pip install --no-cache-dir neo4j fastapi uvicorn
+
+# --- CAI runtime metadata: env vars AND matching Docker labels ---
+# NOTE: EDITION must NOT reuse a Cloudera-reserved edition name. Use your own.
+ENV ML_RUNTIME_EDITOR="PBJ Workbench" \
+    ML_RUNTIME_KERNEL="Python 3.11" \
+    ML_RUNTIME_EDITION="Memgraph" \
+    ML_RUNTIME_SHORT_VERSION="1.0" \
+    ML_RUNTIME_MAINTENANCE_VERSION="2" \
+    ML_RUNTIME_FULL_VERSION="1.0.2" \
+    ML_RUNTIME_DESCRIPTION="PBJ Workbench Python 3.11 with embedded Memgraph GraphDB" \
+    ML_RUNTIME_METADATA_VERSION="2"
+
+LABEL com.cloudera.ml.runtime.editor="PBJ Workbench" \
+      com.cloudera.ml.runtime.kernel="Python 3.11" \
+      com.cloudera.ml.runtime.edition="Memgraph" \
+      com.cloudera.ml.runtime.short-version="1.0" \
+      com.cloudera.ml.runtime.maintenance-version="2" \
+      com.cloudera.ml.runtime.full-version="1.0.2" \
+      com.cloudera.ml.runtime.description="PBJ Workbench Python 3.11 with embedded Memgraph GraphDB" \
+      com.cloudera.ml.runtime.runtime-metadata-version="2"
+
+# Return to the CAI runtime user (uid 8536). Do NOT leave the image as root.
+USER cdsw

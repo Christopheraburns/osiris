@@ -108,3 +108,57 @@ def reshape_earthquake(rec: dict) -> dict:
         "felt": _first(props.get("felt"), raw_props.get("felt")),
         "alert": _first(props.get("alert"), raw_props.get("alert")),
     }
+
+def reshape_fire(rec: dict) -> dict:
+    """Map a canonical FIRE envelope/entity to the ``/api/fires`` item shape.
+
+    Mirrors src/app/api/fires/route.ts parseCSV() items and its EONET-volcano
+    items ({lat, lng, brightness, confidence, date, time, frp[, title, type]}).
+    """
+    entity = _unwrap_entity(rec)
+    position = _as_dict(entity.get("position"))
+    props = _as_dict(entity.get("properties"))
+
+    item = {
+        "lat": _first(position.get("lat"), entity.get("lat")),
+        "lng": _first(position.get("lng"), entity.get("lng")),
+        "brightness": props.get("brightness"),
+        "confidence": props.get("confidence"),
+        "date": props.get("date"),
+        "time": props.get("time"),
+        "frp": props.get("frp"),
+    }
+    # Volcano dual-emits carry a display title + type (route.ts parity).
+    if props.get("firetype") == "volcano":
+        item["title"] = _first(props.get("title"), entity.get("name"))
+        item["type"] = "volcano"
+    return item
+
+
+def reshape_weather(rec: dict) -> dict:
+    """Map a canonical WEATHER envelope/entity to the ``/api/weather`` event shape.
+
+    Mirrors the WeatherEvent type in src/app/api/weather/route.ts:
+    {id, title, category, type, icon, severity, lat, lng, date, expires, area,
+     source, provider}.
+    """
+    entity = _unwrap_entity(rec)
+    position = _as_dict(entity.get("position"))
+    props = _as_dict(entity.get("properties"))
+    src = _as_dict(entity.get("source"))
+
+    return {
+        "id": entity.get("id"),
+        "title": _first(props.get("title"), entity.get("name")),
+        "category": _first(props.get("category"), "unknown"),
+        "type": _first(props.get("wxtype"), "Event"),
+        "icon": _first(props.get("icon"), "alert"),
+        "severity": _first(props.get("severity"), "low"),
+        "lat": _first(position.get("lat"), entity.get("lat")),
+        "lng": _first(position.get("lng"), entity.get("lng")),
+        "date": _first(props.get("date"), entity.get("timestamp")),
+        "expires": props.get("expires"),
+        "area": props.get("area"),
+        "source": _first(props.get("eventSrc"), src.get("sourceUrl")),
+        "provider": _first(props.get("provider"), src.get("provider")),
+    }

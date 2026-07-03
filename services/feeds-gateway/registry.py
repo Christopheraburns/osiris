@@ -1,8 +1,8 @@
-"""Migrated-feed registry.
+"""Migrated-feed registry.  ── FULL REPLACEMENT for services/feeds-gateway/registry.py ──
 
 The single source of truth for which feeds have been migrated to the streaming
 lakehouse path. Adding a feed later is a two-step change with no architectural
-impact: build a NiFi flow that publishes its entities to ``osiris.entities`` and
+impact: build a NiFi flow that publishes its entities to the entities topic and
 add an entry here.
 
 Each entry declares:
@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from typing import Callable
 
-from reshape import reshape_earthquake
+from reshape import reshape_earthquake, reshape_fire, reshape_weather
 
 FeedReshaper = Callable[[dict], dict]
 
@@ -29,13 +29,27 @@ class FeedSpec:
         self.reshape = reshape
 
 
-# Earthquakes is the first (proof-of-concept) migrated feed.
 FEEDS: dict[str, FeedSpec] = {
     "earthquakes": FeedSpec(
         name="earthquakes",
         response_key="earthquakes",
         entity_types={"SEISMIC"},
         reshape=reshape_earthquake,
+    ),
+    # HAZARD category — NASA FIRMS detections + EONET volcano dual-emits.
+    "fires": FeedSpec(
+        name="fires",
+        response_key="fires",
+        entity_types={"FIRE"},
+        reshape=reshape_fire,
+    ),
+    # HAZARD category — NASA EONET events + NOAA/NWS alerts.
+    # response_key is "events" because /api/weather returns {"events": [...]}.
+    "weather": FeedSpec(
+        name="weather",
+        response_key="events",
+        entity_types={"WEATHER"},
+        reshape=reshape_weather,
     ),
 }
 

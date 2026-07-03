@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { stealthFetch } from '@/lib/stealthFetch';
-
+import { shouldUseGateway, securedProxy } from '@/lib/connectionMode';
 /**
  * OSIRIS — Severe Weather & Anomalies API
  * Fetches active natural events from NASA EONET and NOAA/NWS active alerts.
@@ -80,6 +80,15 @@ type NwsResponse = {
 };
 
 export async function GET() {
+  
+  if (shouldUseGateway('weather')) {
+    const data = await securedProxy<{ events: unknown[]; total: number }>(
+      '/feeds/weather',
+      { events: [], total: 0 },
+    );
+    return NextResponse.json(data, { headers: { 'Cache-Control': 'no-store' } });
+  }
+
   try {
     const [eonetRes, nwsRes] = await Promise.allSettled([
       stealthFetch('https://eonet.gsfc.nasa.gov/api/v3/events?status=open&limit=100', {
