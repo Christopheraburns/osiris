@@ -86,8 +86,8 @@ flowchart LR
   ice -. "rebuild projection" .-> neo
 ```
 
-The recorder reaches only in-cluster services (`osiris`, `hive-metastore`,
-`ozone-s3g`, `neo4j`) at runtime. The dotted edge denotes that the graph is a
+The recorder reaches only in-cluster services (`osiris`, `osiris-hive-metastore`,
+`osiris-ozone-s3g`, `osiris-neo4j`) at runtime. The dotted edge denotes that the graph is a
 **derived projection** that can be rebuilt from Iceberg at any time (§7).
 
 ---
@@ -97,8 +97,8 @@ The recorder reaches only in-cluster services (`osiris`, `hive-metastore`,
 | Aspect | Choice |
 |---|---|
 | Image | `python:3.12-slim` + `pyiceberg[hive,s3fs,pyarrow]`, `requests` |
-| Catalog | Hive, `thrift://hive-metastore:9083`, warehouse `s3a://osiris-lake/warehouse` |
-| Storage (FileIO) | S3 → Ozone gateway: `s3.endpoint=http://ozone-s3g:9878`, path-style, key/secret `osiris`/`osiris` |
+| Catalog | Hive, `thrift://osiris-hive-metastore:9083`, warehouse `s3a://osiris-lake/warehouse` |
+| Storage (FileIO) | S3 → Ozone gateway: `s3.endpoint=http://osiris-ozone-s3g:9878`, path-style, key/secret `osiris`/`osiris` |
 | Source | Polls `http://osiris:3000/api/*` (base configurable) |
 | Loop | Per-endpoint cadence (reuse the `pollMs` values already in the catalog) |
 | Write | Batch rows per cycle, append via `table.append(pyarrow_table)` |
@@ -108,7 +108,7 @@ The recorder reaches only in-cluster services (`osiris`, `hive-metastore`,
 
 ```python
 run_id = uuid4().hex
-catalog = load_catalog("osiris", type="hive", uri="thrift://hive-metastore:9083",
+catalog = load_catalog("osiris", type="hive", uri="thrift://osiris-hive-metastore:9083",
                        warehouse="s3a://osiris-lake/warehouse", **s3_opts)
 obs_tbl   = catalog.load_table("lake.observations")
 event_tbl = catalog.load_table("lake.events")
@@ -342,7 +342,7 @@ ones `derivedBy='structural'` so low-trust links can be filtered.
 
 ### Connection
 
-- Driver: official Neo4j Python driver over Bolt (`bolt://neo4j:7687`),
+- Driver: official Neo4j Python driver over Bolt (`bolt://osiris-neo4j:7687`),
   user `neo4j`, password from `NEO4J_PASSWORD` (`.env`).
 - Batched writes via `UNWIND $rows ... MERGE` (one transaction per label per
   cycle) for throughput.
@@ -389,7 +389,7 @@ that moved near it"* into `event_id` + window, then hands off to window replay.
 ## 9. Air-gapped considerations
 
 - The recorder talks only to in-cluster services at runtime (`osiris`,
-  `hive-metastore`, `ozone-s3g`, `neo4j`). No internet egress.
+  `osiris-hive-metastore`, `osiris-ozone-s3g`, `osiris-neo4j`). No internet egress.
 - Neo4j is offline-friendly: APOC **core** ships in the image and is enabled via
   `NEO4J_PLUGINS='["apoc"]'` (copied from `/var/lib/neo4j/labs`, no download).
 - Pre-bake all Python wheels into the image at build time (no `pip install` at
@@ -427,7 +427,7 @@ rework.
 **Phase 1 — Recorder (Iceberg sink first)** ✅ **DONE**
 4. `tools/recorder/` — Python recorder: `catalog.py` (PyIceberg Hive catalog), `normalize.py` (faithful port of `extractEntities`/`toPolybolosEntity` + row builders), `iceberg_sink.py` (append/scan), `recorder.py` (poll/once/rebuild). `Dockerfile` + pinned `requirements.txt`.
 5. **`s3a`/`s3` scheme smoke-tested first** (`smoke_test.py`). Finding: PyIceberg's default **pyarrow** S3 writer issues a multipart upload that Ozone's S3 gateway rejects for small objects (`CompleteMultipartUpload … must specify at least one part`). Fix: select the **fsspec/s3fs** FileIO (`py-io-impl=pyiceberg.io.fsspec.FsspecFileIO`), which does a single `PutObject` — same as Hadoop S3A. Reads/scans worked under both; only writes needed the switch.
-6. `osiris-recorder` service added to `docker-compose.yml` (network `osiris-net`; env: base URL, Iceberg/S3/Neo4j; `depends_on` osiris + hive-metastore + ozone-s3g + neo4j; `MODE`/`--mode`).
+6. `osiris-recorder` service added to `docker-compose.yml` (network `osiris-net`; env: base URL, Iceberg/S3/Neo4j; `depends_on` osiris + osiris-hive-metastore + osiris-ozone-s3g + osiris-neo4j; `MODE`/`--mode`).
 
 **Phase 2 — Graph projection (second sink)** ✅ **DONE**
 7. `graph_sink.py` — single idempotent projection (`UNWIND` + `MERGE` on stable natural keys, last-known props + provenance, structural `OPERATED_BY`/`OWNED_BY`/`FLAGGED_TO` promotion). Invoked inline after each Iceberg append. In-batch last-wins dedupe avoids the UNWIND+MERGE duplicate pitfall; null/empty keys are skipped.

@@ -59,7 +59,7 @@ full dump ──filter.sh──> filtered.ndjson.gz ──transform.py──> no
    ```
 3. **Import** into Neo4j (offline; **overwrites** the database — see below):
    ```bash
-   docker compose cp tools/wikidata-a1/import neo4j:/var/lib/neo4j/import
+   docker compose cp tools/wikidata-a1/import osiris-neo4j:/var/lib/neo4j/import
    docker compose stop neo4j
    docker compose run --rm neo4j bash /var/lib/neo4j/import/../import.sh /var/lib/neo4j/import neo4j
    docker compose start neo4j

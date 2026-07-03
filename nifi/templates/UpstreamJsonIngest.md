@@ -21,7 +21,7 @@ GenerateFlowFile (CRON from pollMs)
 | `poll.cron` | `0 0/5 * * * ?` |
 | `script.file` | `/opt/nifi/conf/osiris/scripts/earthquakes-ingest.groovy` |
 | `kafka.topic` | `osiris.entities` |
-| `kafka.brokers` | `kafka:9092` |
+| `kafka.brokers` | `osiris-kafka:9092` |
 
 ## First instance
 

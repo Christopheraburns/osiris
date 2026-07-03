@@ -1,0 +1,9 @@
+{
+  "name": "tileserver-gl-styles",
+  "version": "2.0.0",
+  "description": "Default preview style for TileServer-GL",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/klokantech/tileserver-gl-styles.git"
+  }
+}

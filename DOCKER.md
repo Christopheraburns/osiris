@@ -49,6 +49,70 @@ docker compose up -d --build    # rebuild locally after pulling new code
 docker compose down             # stop & remove
 ```
 
+### Lakehouse bootstrap (first install)
+
+The Iceberg warehouse expects an Ozone S3 bucket `osiris-lake`. On a fresh
+install, create it once before the Flink job-submitter can apply DDL:
+
+```bash
+bash scripts/bootstrap-lakehouse.sh
+docker compose restart flink-job-submitter
+```
+
+### Map tiles (WebGL basemap)
+
+The dashboard map loads vector tiles from the **local tileserver** (`osiris-tileserver`)
+on host port **8080**. Compose starts tileserver first and waits for its healthcheck
+before starting `osiris`.
+
+```bash
+# Tileserver only (optional — compose handles ordering automatically)
+docker compose up -d osiris-tileserver
+
+# Full stack (osiris waits until tileserver serves /styles/dark/style.json)
+docker compose up -d
+```
+
+Set in `.env`:
+
+```bash
+NEXT_PUBLIC_BASEMAP_STYLE_URL=http://localhost:8080/styles/dark/style.json
+TILESERVER_PORT=8080
+```
+
+Rebuild `osiris` after changing `NEXT_PUBLIC_BASEMAP_STYLE_URL` (it is baked in at
+build time):
+
+```bash
+docker compose up -d --build osiris-tileserver osiris
+```
+
+Place `tileserver/osiris-basemap.mbtiles` on the host before starting (gitignored).
+The legacy nginx CARTO cache (`osiris-cache`) is on port **8081** by default so it
+does not conflict with the tileserver on **8080**.
+
+### Local LLM (Ollama)
+
+The default model is `qwen2.5:14b-instruct-q4_K_M` (fits ~24 GB VRAM). Pull it
+after the stack is up:
+
+```bash
+docker exec osiris-ollama ollama pull qwen2.5:14b-instruct-q4_K_M
+```
+
+Override via `OLLAMA_MODEL` in `.env` if you use a different quant or size.
+
+### NiFi ingest (secured-connection mode)
+
+Import the USGS earthquakes flow so NiFi publishes to Kafka topic
+`osiris.entities`:
+
+```bash
+bash nifi/deploy/import-earthquakes.sh
+```
+
+See [`nifi/README.md`](nifi/README.md) for details.
+
 ### Pull the prebuilt image from GHCR
 
 A prebuilt multi-arch-friendly image is published to the GitHub Container
@@ -147,6 +211,8 @@ them only if you extend the relevant route or hit rate limits.
 |----------|---------|---------|
 | `OSIRIS_TELEGRAM_CHANNELS` | Comma-separated list of public Telegram channel usernames (no `@`) to scrape for the **Telegram OSINT** map layer. Overrides the curated default set. | `osintdefender,insiderpaper,aljazeeraenglish,nexta_live,war_monitor` |
 | `OSIRIS_PORT` | Host port the compose file publishes (container itself always listens on 3000). | `3000` |
+| `OLLAMA_MODEL` | Ollama model tag for GraphRAG / LLM (pull with `docker exec osiris-ollama ollama pull …`). | `qwen2.5:14b-instruct-q4_K_M` |
+| `NEXT_PUBLIC_TILE_CACHE_URL` | nginx tile-cache base URL for the map (`disabled` = Next.js proxy only). | `http://<host>:8080` |
 
 ### Keyless sources (no configuration needed)
 

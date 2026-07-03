@@ -25,8 +25,13 @@ from registry import ENTITY_TYPE_TO_FEED, FEEDS, RESPONSE_KEY_TO_FEED
 
 log = logging.getLogger("feeds-gateway.consumer")
 
+<<<<<<< HEAD
 KAFKA_BROKERS = os.environ.get("KAFKA_BROKERS", "kafka:9092")
 ENTITIES_TOPIC = os.environ.get("OSIRIS_ENTITIES_TOPIC", "osiris-entities")
+=======
+KAFKA_BROKERS = os.environ.get("KAFKA_BROKERS", "osiris-kafka:9092")
+ENTITIES_TOPIC = os.environ.get("OSIRIS_ENTITIES_TOPIC", "osiris.entities")
+>>>>>>> b4f49591a98ab846cc834907bf81d466a22e02e3
 FEED_TTL_SECONDS = float(os.environ.get("FEED_TTL_SECONDS", "3600"))
 GROUP_ID = os.environ.get("KAFKA_GROUP_ID", "osiris-feeds-gateway")
 

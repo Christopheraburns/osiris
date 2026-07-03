@@ -95,9 +95,9 @@ code. `osirisai.live` here is only the SPARQL User-Agent string.
 
 ### `osiris-recorder` (lakehouse writer, `tools/recorder`)
 Control-plane service the `recorder` route proxies. Its compose env already wires it to
-**Hive Metastore** (`thrift://hive-metastore:9083`), an **Ozone S3 gateway**
-(`http://ozone-s3g:9878`, warehouse `s3a://osiris-lake/warehouse`), and **Neo4j**
-(`bolt://neo4j:7687`) — i.e., the Iceberg + graph stack is already partly scaffolded in
+**Hive Metastore** (`thrift://osiris-hive-metastore:9083`), an **Ozone S3 gateway**
+(`http://osiris-ozone-s3g:9878`, warehouse `s3a://osiris-lake/warehouse`), and **Neo4j**
+(`bolt://osiris-neo4j:7687`) — i.e., the Iceberg + graph stack is already partly scaffolded in
 the repo. It consumes no external internet data.
 
 ---

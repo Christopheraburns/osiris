@@ -1,0 +1,17 @@
+{
+  "options": {
+    "paths": {
+      "root": "",
+      "fonts": "fonts",
+      "sprites": "sprites",
+      "styles": "styles",
+      "mbtiles": "."
+    }
+  },
+  "styles": {
+    "dark": { "style": "dark/style.json" }
+  },
+  "data": {
+    "osiris": { "mbtiles": "osiris-basemap.mbtiles" }
+  }
+}

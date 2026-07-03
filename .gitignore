@@ -17,6 +17,7 @@
 # Misc
 .DS_Store
 *.pem
+*.mbtiles
 
 # Debug
 npm-debug.log*

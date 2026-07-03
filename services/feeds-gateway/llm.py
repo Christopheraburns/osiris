@@ -21,16 +21,31 @@ import httpx
 
 log = logging.getLogger("feeds-gateway.llm")
 
-OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://ollama:11434")
+OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://osiris-ollama:11434")
 OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "mistral-small3.2")
 REQUEST_TIMEOUT = float(os.environ.get("OLLAMA_TIMEOUT", "120"))
 
 
 async def available() -> bool:
+    """True when Ollama is up and the configured model is pulled."""
     try:
         async with httpx.AsyncClient(timeout=5) as client:
             r = await client.get(f"{OLLAMA_URL}/api/tags")
-            return r.status_code == 200
+            if r.status_code != 200:
+                return False
+            models = r.json().get("models") or []
+            if not models:
+                return False
+            names = {m.get("name", "") for m in models if m.get("name")}
+            target = OLLAMA_MODEL.removesuffix(":latest")
+            base = target.split(":")[0]
+            return any(
+                n == OLLAMA_MODEL
+                or n == target
+                or n.startswith(f"{base}:")
+                or n.split(":")[0] == base
+                for n in names
+            )
     except Exception as exc:  # noqa: BLE001
         log.warning("ollama unavailable: %s", exc)
         return False

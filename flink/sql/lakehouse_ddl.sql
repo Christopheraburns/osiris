@@ -24,14 +24,14 @@
 --      can populate it later without a migration.
 --
 --  Apply with the Flink SQL client:
---    docker compose cp flink/sql/lakehouse_ddl.sql flink-jobmanager:/tmp/lakehouse_ddl.sql
---    docker compose exec flink-jobmanager ./bin/sql-client.sh -f /tmp/lakehouse_ddl.sql
+--    docker compose cp flink/sql/lakehouse_ddl.sql osiris-flink-jobmanager:/tmp/lakehouse_ddl.sql
+--    docker compose exec osiris-flink-jobmanager ./bin/sql-client.sh -f /tmp/lakehouse_ddl.sql
 -- ════════════════════════════════════════════════════════════════════════
 
 CREATE CATALOG osiris_iceberg WITH (
   'type' = 'iceberg',
   'catalog-type' = 'hive',
-  'uri' = 'thrift://hive-metastore:9083',
+  'uri' = 'thrift://osiris-hive-metastore:9083',
   'warehouse' = 's3a://osiris-lake/warehouse'
 );
 

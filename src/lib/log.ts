@@ -53,7 +53,7 @@ function store(): GlobalLog {
 
 function pgConfig() {
   return {
-    host: process.env.LOGS_PG_HOST || 'metastore-db',
+    host: process.env.LOGS_PG_HOST || 'osiris-metastore-db',
     port: Number(process.env.LOGS_PG_PORT || 5432),
     user: process.env.LOGS_PG_USER || 'hive',
     password: process.env.LOGS_PG_PASSWORD || 'hive',

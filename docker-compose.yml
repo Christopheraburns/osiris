@@ -7,18 +7,38 @@ x-ozone-common: &ozone-common
   networks: [osiris-net]
 
 x-ozone-env: &ozone-env
-  OZONE-SITE.XML_ozone.om.address: ozone-om
-  OZONE-SITE.XML_ozone.om.http-address: ozone-om:9874
-  OZONE-SITE.XML_ozone.scm.names: ozone-scm
-  OZONE-SITE.XML_ozone.scm.client.address: ozone-scm
-  OZONE-SITE.XML_ozone.scm.block.client.address: ozone-scm
+  OZONE-SITE.XML_ozone.om.address: osiris-ozone-om
+  OZONE-SITE.XML_ozone.om.http-address: osiris-ozone-om:9874
+  OZONE-SITE.XML_ozone.scm.names: osiris-ozone-scm
+  OZONE-SITE.XML_ozone.scm.client.address: osiris-ozone-scm
+  OZONE-SITE.XML_ozone.scm.block.client.address: osiris-ozone-scm
   OZONE-SITE.XML_ozone.scm.datanode.id.dir: /data/metadata
   OZONE-SITE.XML_ozone.metadata.dirs: /data/metadata
   OZONE-SITE.XML_hdds.datanode.dir: /data/hdds
   OZONE-SITE.XML_ozone.replication: "1"
-  no_proxy: "ozone-om,ozone-scm,ozone-s3g,localhost,127.0.0.1"
+  no_proxy: "osiris-ozone-om,osiris-ozone-scm,osiris-ozone-s3g,localhost,127.0.0.1"
 
 services:
+  osiris-tileserver:
+    build:
+      context: ./tileserver
+      dockerfile: Dockerfile
+    container_name: osiris-tileserver
+    ports:
+      - "${TILESERVER_PORT:-8080}:8080"
+    volumes:
+      # Large binary — bind-mount at runtime (gitignored).
+      - ./tileserver/osiris-basemap.mbtiles:/app/osiris-basemap.mbtiles:ro
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/styles/dark/style.json"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
+    restart: unless-stopped
+    networks:
+      - osiris-net
+
   osiris:
     # Pulls the prebuilt image from GitHub Container Registry. The `build:`
     # block is kept as a fallback: `docker compose up -d` uses the registry
@@ -27,6 +47,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_BASEMAP_STYLE_URL: ${NEXT_PUBLIC_BASEMAP_STYLE_URL:-http://localhost:8080/styles/dark/style.json}
     container_name: osiris
     # Host port is configurable via OSIRIS_PORT in .env (defaults to 3000).
     ports:
@@ -44,7 +66,7 @@ services:
       - RECORDER_URL=http://osiris-recorder:8090
       - FEEDS_GATEWAY_URL=http://osiris-feeds-gateway:8091
       - INTEL_URL=http://osiris-intel:4000
-      - LOGS_PG_HOST=metastore-db
+      - LOGS_PG_HOST=osiris-metastore-db
       - LOGS_PG_PORT=5432
       - LOGS_PG_USER=hive
       - LOGS_PG_PASSWORD=hive
@@ -53,6 +75,8 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
+      osiris-tileserver:
+        condition: service_healthy
       metastore-db:
         condition: service_healthy
       osiris-intel:
@@ -66,7 +90,8 @@ services:
     image: nginx:alpine
     container_name: osiris-cache
     ports:
-      - "8080:8080"
+      # Legacy CARTO tile proxy + optional front door; basemap tiles are on :8080 (osiris-tileserver).
+      - "${OSIRIS_CACHE_PORT:-8081}:8080"
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
       - nginx-cache:/var/cache/nginx
@@ -89,7 +114,7 @@ services:
 
   nifi:
     image: apache/nifi:2.0.0
-    container_name: nifi
+    container_name: osiris-nifi
     ports:
       - "8443:8443"
     environment:
@@ -112,9 +137,9 @@ services:
     # bug that wrongly rejects the 0.0.0.0-bound controller listener with
     # "advertised.listeners cannot use the nonroutable meta-address 0.0.0.0".
     image: apache/kafka:4.0.0
-    container_name: kafka
+    container_name: osiris-kafka
     ports:
-      # Host clients connect via localhost:29092; in-cluster containers use kafka:9092.
+      # Host clients connect via localhost:29092; in-cluster containers use osiris-kafka:9092.
       - "29092:29092"
     environment:
       - KAFKA_NODE_ID=1
@@ -122,9 +147,9 @@ services:
       - KAFKA_CONTROLLER_LISTENER_NAMES=CONTROLLER
       - KAFKA_INTER_BROKER_LISTENER_NAME=INTERNAL
       - KAFKA_LISTENERS=CONTROLLER://0.0.0.0:9093,INTERNAL://0.0.0.0:9092,HOST://0.0.0.0:29092
-      - KAFKA_ADVERTISED_LISTENERS=INTERNAL://kafka:9092,HOST://localhost:29092
+      - KAFKA_ADVERTISED_LISTENERS=INTERNAL://osiris-kafka:9092,HOST://localhost:29092
       - KAFKA_LISTENER_SECURITY_PROTOCOL_MAP=CONTROLLER:PLAINTEXT,INTERNAL:PLAINTEXT,HOST:PLAINTEXT
-      - KAFKA_CONTROLLER_QUORUM_VOTERS=1@kafka:9093
+      - KAFKA_CONTROLLER_QUORUM_VOTERS=1@osiris-kafka:9093
       - KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR=1
       - KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR=1
       - KAFKA_TRANSACTION_STATE_LOG_MIN_ISR=1
@@ -141,7 +166,7 @@ services:
   # by depends_on: scm -> om -> {datanode, s3g}.
   ozone-scm:
     <<: *ozone-common
-    container_name: ozone-scm
+    container_name: osiris-ozone-scm
     command: ["ozone", "scm"]
     environment:
       <<: *ozone-env
@@ -153,12 +178,12 @@ services:
 
   ozone-om:
     <<: *ozone-common
-    container_name: ozone-om
+    container_name: osiris-ozone-om
     command: ["ozone", "om"]
     environment:
       <<: *ozone-env
       ENSURE_OM_INITIALIZED: /data/metadata/om/current/VERSION
-      WAITFOR: ozone-scm:9876
+      WAITFOR: osiris-ozone-scm:9876
       CORE-SITE.XML_hadoop.proxyuser.hadoop.hosts: "*"
       CORE-SITE.XML_hadoop.proxyuser.hadoop.groups: "*"
     ports:
@@ -170,11 +195,11 @@ services:
 
   ozone-datanode:
     <<: *ozone-common
-    container_name: ozone-datanode
+    container_name: osiris-ozone-datanode
     command: ["ozone", "datanode"]
     environment:
       <<: *ozone-env
-      WAITFOR: ozone-om:9874
+      WAITFOR: osiris-ozone-om:9874
     depends_on:
       - ozone-om
     volumes:
@@ -182,11 +207,11 @@ services:
 
   ozone-s3g:
     <<: *ozone-common
-    container_name: ozone-s3g
+    container_name: osiris-ozone-s3g
     command: ["ozone", "s3g"]
     environment:
       <<: *ozone-env
-      WAITFOR: ozone-om:9874
+      WAITFOR: osiris-ozone-om:9874
     ports:
       - "9878:9878"
     depends_on:
@@ -195,7 +220,7 @@ services:
   # ── Postgres: backing store for the Hive Metastore (Stage 2) ──
   metastore-db:
     image: postgres:16
-    container_name: metastore-db
+    container_name: osiris-metastore-db
     environment:
       POSTGRES_USER: hive
       POSTGRES_PASSWORD: hive
@@ -217,7 +242,7 @@ services:
       context: ./hive
       dockerfile: Dockerfile
     image: osiris-hive-metastore:latest
-    container_name: hive-metastore
+    container_name: osiris-hive-metastore
     environment:
       SERVICE_NAME: metastore
       DB_DRIVER: postgres
@@ -240,13 +265,13 @@ services:
       context: ./flink
       dockerfile: Dockerfile
     image: osiris-flink:latest
-    container_name: flink-jobmanager
+    container_name: osiris-flink-jobmanager
     command: jobmanager
     ports:
       - "8081:8081"
     environment:
       FLINK_PROPERTIES: |
-        jobmanager.rpc.address: flink-jobmanager
+        jobmanager.rpc.address: osiris-flink-jobmanager
         taskmanager.numberOfTaskSlots: 4
         execution.checkpointing.interval: 10s
         state.checkpoints.dir: file:///tmp/flink-checkpoints
@@ -265,11 +290,11 @@ services:
     build:
       context: ./flink
       dockerfile: Dockerfile
-    container_name: flink-taskmanager
+    container_name: osiris-flink-taskmanager
     command: taskmanager
     environment:
       FLINK_PROPERTIES: |
-        jobmanager.rpc.address: flink-jobmanager
+        jobmanager.rpc.address: osiris-flink-jobmanager
         taskmanager.numberOfTaskSlots: 4
     depends_on:
       flink-jobmanager:
@@ -285,7 +310,7 @@ services:
   # so persistence survives restarts. See flink/job-submitter.sh.
   flink-job-submitter:
     image: osiris-flink:latest
-    container_name: flink-job-submitter
+    container_name: osiris-flink-job-submitter
     entrypoint: ["bash", "/opt/job-submitter.sh"]
     volumes:
       - ./flink/sql:/opt/sql:ro
@@ -304,10 +329,10 @@ services:
       - osiris-net
 
   # ── Local LLM (Mistral Small 3.2 24B, 4-bit) served via Ollama on the GPU ──
-  # OpenAI-compatible API at http://ollama:11434 (in-cluster) / localhost:11434.
+  # OpenAI-compatible API at http://osiris-ollama:11434 (in-cluster) / localhost:11434.
   ollama:
     image: ollama/ollama:latest
-    container_name: ollama
+    container_name: osiris-ollama
     ports:
       - "11434:11434"
     environment:
@@ -328,12 +353,12 @@ services:
       - osiris-net
 
   # ── Neo4j knowledge graph (durable entities + relationships projection) ──
-  # Browser UI: http://localhost:7474  | Bolt (drivers): bolt://neo4j:7687
+  # Browser UI: http://localhost:7474  | Bolt (drivers): bolt://osiris-neo4j:7687
   # Iceberg holds the full observation/event history; Neo4j holds the derived
   # identity + relationship layer (see docs/lakehouse-recorder.md §"Dual-write").
   neo4j:
     image: neo4j:5.26-community
-    container_name: neo4j
+    container_name: osiris-neo4j
     ports:
       - "7474:7474"   # HTTP browser
       - "7687:7687"   # Bolt
@@ -370,12 +395,12 @@ services:
     container_name: osiris-recorder
     environment:
       OSIRIS_BASE_URL: http://osiris:3000
-      ICEBERG_URI: thrift://hive-metastore:9083
+      ICEBERG_URI: thrift://osiris-hive-metastore:9083
       ICEBERG_WAREHOUSE: s3a://osiris-lake/warehouse
-      S3_ENDPOINT: http://ozone-s3g:9878
+      S3_ENDPOINT: http://osiris-ozone-s3g:9878
       S3_ACCESS_KEY: osiris
       S3_SECRET_KEY: osiris
-      NEO4J_URI: bolt://neo4j:7687
+      NEO4J_URI: bolt://osiris-neo4j:7687
       NEO4J_USER: neo4j
       NEO4J_PASSWORD: ${NEO4J_PASSWORD:-osirisgraph1}
       MODE: idle
@@ -409,23 +434,23 @@ services:
     image: osiris-feeds-gateway:latest
     container_name: osiris-feeds-gateway
     environment:
-      KAFKA_BROKERS: kafka:9092
+      KAFKA_BROKERS: osiris-kafka:9092
       OSIRIS_ENTITIES_TOPIC: osiris.entities
       KAFKA_GROUP_ID: osiris-feeds-gateway
       FEED_TTL_SECONDS: "3600"
       LOG_LEVEL: INFO
-      LOGS_PG_HOST: metastore-db
+      LOGS_PG_HOST: osiris-metastore-db
       LOGS_PG_PORT: "5432"
       LOGS_PG_USER: hive
       LOGS_PG_PASSWORD: hive
       LOGS_PG_DB: osiris_logs
       LOGS_PG_BOOTSTRAP_DB: metastore
       # GraphRAG intelligence layer (Neo4j knowledge graph + local Ollama LLM).
-      NEO4J_URI: bolt://neo4j:7687
+      NEO4J_URI: bolt://osiris-neo4j:7687
       NEO4J_USER: neo4j
       NEO4J_PASSWORD: ${NEO4J_PASSWORD:-osirisgraph1}
-      OLLAMA_URL: http://ollama:11434
-      OLLAMA_MODEL: ${OLLAMA_MODEL:-mistral-small3.2:latest}
+      OLLAMA_URL: http://osiris-ollama:11434
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5:14b-instruct-q4_K_M}
       INTEL_RESOLVER_URL: http://osiris-intel:4000
     expose:
       - "8091"
@@ -456,9 +481,9 @@ volumes:
 
 networks:
   # Shared bridge network so every service can reach the others by container
-  # name (e.g. http://osiris:3000, https://nifi:8443, kafka:9092).
+  # name (e.g. http://osiris:3000, https://osiris-nifi:8443, osiris-kafka:9092).
   # name is pinned (no project prefix) so the DNS search domain has no
-  # underscore -- otherwise FQDNs like hive-metastore.osiris_osiris-net break
+  # underscore -- otherwise FQDNs like osiris-hive-metastore.osiris_osiris-net break
   # Java URI parsing in Hive/Iceberg ("Illegal character in hostname").
   osiris-net:
     name: osiris-net

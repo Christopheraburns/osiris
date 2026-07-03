@@ -28,12 +28,12 @@ def load_osiris_catalog():
         "osiris",
         **{
             "type": "hive",
-            "uri": os.environ.get("ICEBERG_URI", "thrift://hive-metastore:9083"),
+            "uri": os.environ.get("ICEBERG_URI", "thrift://osiris-hive-metastore:9083"),
             "warehouse": os.environ.get("ICEBERG_WAREHOUSE", "s3a://osiris-lake/warehouse"),
             # Use the fsspec/s3fs FileIO (single PutObject for small files) — the
             # pyarrow S3 writer's multipart upload is rejected by Ozone's S3 gateway.
             "py-io-impl": "pyiceberg.io.fsspec.FsspecFileIO",
-            "s3.endpoint": os.environ.get("S3_ENDPOINT", "http://ozone-s3g:9878"),
+            "s3.endpoint": os.environ.get("S3_ENDPOINT", "http://osiris-ozone-s3g:9878"),
             "s3.access-key-id": os.environ.get("S3_ACCESS_KEY", "osiris"),
             "s3.secret-access-key": os.environ.get("S3_SECRET_KEY", "osiris"),
             "s3.path-style-access": "true",

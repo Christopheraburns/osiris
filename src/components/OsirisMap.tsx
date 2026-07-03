@@ -3,6 +3,11 @@
 import { useEffect, useRef, useState, useCallback, memo } from 'react';
 import maplibregl from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
+import {
+  basemapStyleUrl,
+  OPENFREEMAP_DARK_STYLE,
+  transformBasemapRequest,
+} from '@/lib/tileProxy';
 
 interface OsirisMapProps {
   data: any;
@@ -135,9 +140,10 @@ function OsirisMap({ data, activeLayers, onEntityClick, onMouseCoords, onRightCl
 
   useEffect(() => {
     if (!containerRef.current || mapRef.current) return;
-    
-    // Select basemap style
-    const styleUrl = 'https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json';
+
+    let fallbackApplied = false;
+
+    const styleUrl = basemapStyleUrl();
 
     const map = new maplibregl.Map({
       container: containerRef.current,
@@ -145,14 +151,16 @@ function OsirisMap({ data, activeLayers, onEntityClick, onMouseCoords, onRightCl
       center: [25.48, 42.70], zoom: 6.5, minZoom: 1.5, maxZoom: 18,
       attributionControl: false,
       maxPitch: 85,
-      transformRequest: (url: string) => {
-        // Route all CARTO CDN requests through the internal Next.js proxy API
-        if (url.includes('cartocdn.com')) {
-          const baseUrl = typeof window !== 'undefined' ? window.location.origin : '';
-          return { url: `${baseUrl}/api/proxy-tiles?url=${encodeURIComponent(url)}` };
-        }
-        return { url };
-      },
+      transformRequest: (url: string) => transformBasemapRequest(url),
+    });
+
+    map.on('error', (e) => {
+      if (fallbackApplied) return;
+      const msg = e.error?.message ?? '';
+      if (!msg.includes('Failed to fetch') && !msg.includes('404') && !msg.includes('NetworkError')) return;
+      fallbackApplied = true;
+      console.warn('[OSIRIS] Local basemap failed; switching to OpenFreeMap fallback');
+      map.setStyle(OPENFREEMAP_DARK_STYLE);
     });
 
     map.on('load', () => {

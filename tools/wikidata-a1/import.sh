@@ -8,8 +8,8 @@
 # rebuild + graph_enrich_layer1 to layer the live OSIRIS entities on top
 # (recorder writes are idempotent MERGEs), then run link_to_osiris.cypher.
 #
-# Run inside the neo4j container (Neo4j 5.x):
-#   docker compose cp tools/wikidata-a1/import neo4j:/var/lib/neo4j/import
+# Run inside the osiris-neo4j container (Neo4j 5.x):
+#   docker compose cp tools/wikidata-a1/import osiris-neo4j:/var/lib/neo4j/import
 #   docker compose stop neo4j        # importer needs the db offline
 #   docker compose run --rm neo4j neo4j-admin database import full \
 #       --nodes=/var/lib/neo4j/import/nodes.csv \

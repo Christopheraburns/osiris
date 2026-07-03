@@ -2,10 +2,10 @@
 <?xml-stylesheet type="text/xsl" href="configuration.xsl"?>
 <configuration>
 
-  <!-- ── Metadata store: Postgres (metastore-db) ── -->
+  <!-- ── Metadata store: Postgres (osiris-metastore-db) ── -->
   <property>
     <name>javax.jdo.option.ConnectionURL</name>
-    <value>jdbc:postgresql://metastore-db:5432/metastore</value>
+    <value>jdbc:postgresql://osiris-metastore-db:5432/metastore</value>
   </property>
   <property>
     <name>javax.jdo.option.ConnectionDriverName</name>
@@ -41,7 +41,7 @@
   <!-- ── S3A -> Ozone S3 gateway ── -->
   <property>
     <name>fs.s3a.endpoint</name>
-    <value>http://ozone-s3g:9878</value>
+    <value>http://osiris-ozone-s3g:9878</value>
   </property>
   <property>
     <name>fs.s3a.path.style.access</name>

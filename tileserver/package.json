@@ -1,0 +1,12 @@
+{
+  "name": "osiris-tileserver",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Self-hosted OpenMapTiles vector tile server for OSIRIS (CARTO replacement).",
+  "scripts": {
+    "start": "tileserver-gl-light -c config.json"
+  },
+  "dependencies": {
+    "tileserver-gl-light": "^4.13.0"
+  }
+}

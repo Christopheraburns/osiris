@@ -23,7 +23,7 @@ def iceberg_counts(run_id: str | None) -> None:
 def neo4j_counts() -> None:
     from neo4j import GraphDatabase
 
-    uri = os.environ.get("NEO4J_URI", "bolt://neo4j:7687")
+    uri = os.environ.get("NEO4J_URI", "bolt://osiris-neo4j:7687")
     pwd = os.environ.get("NEO4J_PASSWORD", "osirisgraph1")
     drv = GraphDatabase.driver(uri, auth=(os.environ.get("NEO4J_USER", "neo4j"), pwd))
     print("=== Neo4j nodes by label ===")
