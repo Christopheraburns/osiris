@@ -171,17 +171,34 @@ def bounds(force: bool = False) -> dict:
     return _bounds_cache
 
 
-def _query_window(start_ms: int, end_ms: int, types: Optional[list[str]] = None, limit: int = 20000) -> list[dict]:
-    """Live Hive query for positional events in [start, end], ordered by time."""
+def _in_clause(col: str, values: Optional[list[str]]) -> Optional[str]:
+    if not values:
+        return None
+    safe = ",".join("'" + str(v).replace("'", "").replace('"', "") + "'" for v in values if v)
+    return f"{col} IN ({safe})" if safe else None
+
+
+def _query_window(
+    start_ms: int, end_ms: int, types: Optional[list[str]] = None,
+    feeds: Optional[list[str]] = None, limit: int = 20000,
+) -> list[dict]:
+    """Live Hive query for positional events in [start, end], ordered by time.
+
+    ``feeds`` filters source_feed (flights/vessels/fires/weather/earthquakes) — the
+    user picks these up front so we don't drag back the heavy vessel feed when they
+    only asked for aviation. ``types`` (asset_type) is an optional finer filter.
+    """
     where = [
         f"event_time BETWEEN '{_fmt_ts(int(start_ms))}' AND '{_fmt_ts(int(end_ms))}'",
         "lat IS NOT NULL",
         "lon IS NOT NULL",
     ]
-    if types:
-        safe = ",".join("'" + str(t).replace("'", "").replace('"', "") + "'" for t in types if t)
-        if safe:
-            where.append(f"asset_type IN ({safe})")
+    feed_clause = _in_clause("source_feed", feeds)
+    if feed_clause:
+        where.append(feed_clause)
+    type_clause = _in_clause("asset_type", types)
+    if type_clause:
+        where.append(type_clause)
     sql = (
         f"SELECT asset_id, asset_type, lat, lon, event_time, source_feed "
         f"FROM {FQTN} WHERE {' AND '.join(where)} "
@@ -201,16 +218,19 @@ def _query_window(start_ms: int, end_ms: int, types: Optional[list[str]] = None,
     ]
 
 
-def load_window(start_ms: int, end_ms: int, types: Optional[list[str]] = None, limit: int = 500000) -> dict:
-    """Pull a whole time window into memory with ONE Hive query.
+def load_window(
+    start_ms: int, end_ms: int, types: Optional[list[str]] = None,
+    feeds: Optional[list[str]] = None, limit: int = 500000,
+) -> dict:
+    """Pull a whole time window (for the selected feeds) into memory in ONE query.
 
     After this, the scrubber's per-chunk /history reads are filtered from RAM with
     no Hive round-trip — so scrubbing/playback never pays Tez latency. Only this
-    single load does. The UI calls it once for the working window; the startup
-    warm-up primes the recent window so even the first click is instant.
+    single load does. The buffer holds just the chosen feeds, so picking Aviation
+    never drags back the heavy vessel history.
     """
     global _win_events, _win_start, _win_end
-    evs = _query_window(start_ms, end_ms, types, limit)
+    evs = _query_window(start_ms, end_ms, types, feeds, limit)
     with _win_lock:
         _win_events = evs
         _win_start = int(start_ms)
@@ -219,27 +239,30 @@ def load_window(start_ms: int, end_ms: int, types: Optional[list[str]] = None, l
     return {"count": len(evs), "start": int(start_ms), "end": int(end_ms)}
 
 
-def preload_recent(hours: Optional[float] = None) -> dict:
-    """Load the most recent ``hours`` of the lake into the memory buffer."""
+def preload_recent(hours: Optional[float] = None, feeds: Optional[list[str]] = None) -> dict:
+    """Load the most recent ``hours`` of the given feeds into the memory buffer."""
     h = PRELOAD_HOURS if hours is None else hours
     b = bounds()
     if not b.get("max_time"):
         return {"count": 0, "start": None, "end": None}
     end = int(b["max_time"])
     start = max(int(b.get("min_time") or 0), end - int(h * 3_600_000))
-    return load_window(start, end)
+    return load_window(start, end, feeds=feeds)
 
 
-def window(start_ms: int, end_ms: int, types: Optional[list[str]] = None, limit: int = 20000) -> list[dict]:
+def window(
+    start_ms: int, end_ms: int, types: Optional[list[str]] = None,
+    feeds: Optional[list[str]] = None, limit: int = 20000,
+) -> list[dict]:
     """Serve a replay chunk from the in-memory window if covered; else query Hive.
 
-    The UI preloads a working window via load_window; chunk reads inside it are
-    filtered from RAM (instant). A request outside the loaded window falls back to
-    a live Hive query (slow — not the interactive path).
+    The UI preloads a feed-filtered working window via load_window; chunk reads
+    inside it are filtered from RAM (instant, already feed-scoped). A request
+    outside the loaded window falls back to a live Hive query (slow).
     """
     lo, hi = int(start_ms), int(end_ms)
     with _win_lock:
         if _win_events and lo >= _win_start and hi <= _win_end:
             out = [e for e in _win_events if e["t"] is not None and lo <= e["t"] <= hi]
             return out[:limit]
-    return _query_window(start_ms, end_ms, types, limit)
+    return _query_window(start_ms, end_ms, types, feeds, limit)

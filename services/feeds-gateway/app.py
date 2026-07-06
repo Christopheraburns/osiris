@@ -53,8 +53,10 @@ async def lifespan(app: FastAPI):
             try:
                 b = await asyncio.to_thread(history.bounds, True)
                 log.info("history warm-up ok: %s", b)
-                w = await asyncio.to_thread(history.preload_recent)
-                log.info("history recent window preloaded: %s", w)
+                # Prime only the light default (Aviation) so we don't drag back the
+                # heavy vessel history on boot; other feeds load on operator request.
+                w = await asyncio.to_thread(history.preload_recent, None, ["flights"])
+                log.info("history recent window preloaded (flights): %s", w)
             except Exception as exc:  # noqa: BLE001
                 log.warning("history warm-up failed (retries on first request): %s", exc)
         asyncio.create_task(_warm_history(), name="history-warmup")
@@ -190,16 +192,19 @@ async def history_bounds() -> JSONResponse:
 
 
 @app.get("/history/load")
-async def history_load(start: int, end: int, types: str = "") -> JSONResponse:
-    """Load a time window into the gateway's in-memory replay buffer (one Hive query).
+async def history_load(start: int, end: int, types: str = "", feeds: str = "") -> JSONResponse:
+    """Load a time window (for the chosen feeds) into the in-memory replay buffer.
 
-    Subsequent /history chunk reads inside [start, end] are served from RAM.
+    ``feeds`` is a comma-separated source_feed filter (flights,vessels,fires,…) so
+    the operator only pulls the domains they picked. Subsequent /history chunk reads
+    inside [start, end] are served from RAM.
     """
     if not history.configured():
         raise HTTPException(status_code=503, detail="history not configured (set HIVE_* env vars)")
     tlist = [t for t in types.split(",") if t]
+    flist = [f for f in feeds.split(",") if f]
     try:
-        res = await asyncio.to_thread(history.load_window, start, end, tlist or None)
+        res = await asyncio.to_thread(history.load_window, start, end, tlist or None, flist or None)
     except Exception as exc:  # noqa: BLE001
         log.warning("history load failed: %s", exc)
         raise HTTPException(status_code=503, detail=f"history unavailable: {exc}")
@@ -207,16 +212,18 @@ async def history_load(start: int, end: int, types: str = "") -> JSONResponse:
 
 
 @app.get("/history")
-async def history_window(start: int, end: int, types: str = "", limit: int = 50000) -> JSONResponse:
+async def history_window(start: int, end: int, types: str = "", feeds: str = "", limit: int = 50000) -> JSONResponse:
     """Positional events in [start, end] epoch-ms, ordered by time -- replay frames.
 
-    ``types`` is a comma-separated asset_type filter (e.g. FLIGHT,VESSEL).
+    Served from the in-memory buffer when covered (already feed-filtered by the
+    preceding /history/load). ``feeds``/``types`` apply to the live fallback path.
     """
     if not history.configured():
         raise HTTPException(status_code=503, detail="history not configured (set HIVE_* env vars)")
     tlist = [t for t in types.split(",") if t]
+    flist = [f for f in feeds.split(",") if f]
     try:
-        events = await asyncio.to_thread(history.window, start, end, tlist or None, limit)
+        events = await asyncio.to_thread(history.window, start, end, tlist or None, flist or None, limit)
     except Exception as exc:  # noqa: BLE001
         log.warning("history window failed: %s", exc)
         raise HTTPException(status_code=503, detail=f"history unavailable: {exc}")

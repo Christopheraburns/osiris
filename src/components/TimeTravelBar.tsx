@@ -14,23 +14,29 @@ export interface HistEvent {
 }
 
 interface Props {
-  /** Called with the entity positions visible at the current playhead. */
   onFrame: (events: HistEvent[]) => void;
-  /** Exit TimeTravel mode. */
   onExit: () => void;
 }
 
 const SPEEDS = [10, 60, 300, 1200, 3600];
-const TRAIL_MS = 120_000; // show each asset's last position within a 2-min trail
-const TICK_MS = 100; // playback resolution (10 fps)
-const CHUNK_MS = 5 * 60_000; // scrubber requests history in 5-minute chunks
+const TRAIL_MS = 120_000;
+const TICK_MS = 100;
+const CHUNK_MS = 5 * 60_000;
 const CHUNK_LIMIT = 20000;
-const DEFAULT_WINDOW_MS = 2 * 60 * 60_000; // gateway preloads a 2-hour working window
+const DEFAULT_WINDOW_MS = 2 * 60 * 60_000;
+
+// Feed picker — maps a friendly domain to the lake's source_feed value.
+const FEED_OPTIONS: { key: string; label: string }[] = [
+  { key: 'flights', label: 'Aviation' },
+  { key: 'vessels', label: 'Maritime' },
+  { key: 'fires', label: 'Fires' },
+  { key: 'weather', label: 'Weather' },
+  { key: 'earthquakes', label: 'Earthquakes' },
+];
 
 const fmt = (ms: number) => new Date(ms).toISOString().replace('T', ' ').slice(0, 19) + ' UTC';
 const chunkKeyOf = (t: number) => Math.floor(t / CHUNK_MS) * CHUNK_MS;
 
-// datetime-local <-> epoch ms, interpreting the picker value as UTC (lake times are UTC).
 const toInput = (ms: number) => {
   const d = new Date(ms);
   const p = (n: number) => String(n).padStart(2, '0');
@@ -44,7 +50,7 @@ const fromInput = (v: string): number | null => {
 };
 
 export default function TimeTravelBar({ onFrame, onExit }: Props) {
-  const [status, setStatus] = useState<'loading' | 'ready' | 'error'>('loading');
+  const [status, setStatus] = useState<'select' | 'loading' | 'ready' | 'error'>('select');
   const [errorMsg, setErrorMsg] = useState('');
   const [bounds, setBounds] = useState<{ min: number; max: number; count: number } | null>(null);
   const [playing, setPlaying] = useState(false);
@@ -53,16 +59,19 @@ export default function TimeTravelBar({ onFrame, onExit }: Props) {
   const [buffering, setBuffering] = useState(false);
   const [preparing, setPreparing] = useState(false);
   const [loaded, setLoaded] = useState<{ start: number; end: number } | null>(null);
+  const [feedSel, setFeedSel] = useState<Record<string, boolean>>({ flights: true }); // Aviation by default (light)
 
   const chunksRef = useRef<Map<number, HistEvent[]>>(new Map());
   const inFlightRef = useRef<Set<number>>(new Set());
   const loadedRef = useRef<{ start: number; end: number } | null>(null);
+  const feedsRef = useRef<string[]>([]);
   const playheadRef = useRef(0);
   const playingRef = useRef(false);
   const speedRef = useRef(300);
   playingRef.current = playing;
   speedRef.current = speed;
 
+  const feedsQuery = () => (feedsRef.current.length ? `&feeds=${feedsRef.current.join(',')}` : '');
   const inLoaded = (t: number) => {
     const r = loadedRef.current;
     return !!r && t >= r.start && t <= r.end;
@@ -100,8 +109,7 @@ export default function TimeTravelBar({ onFrame, onExit }: Props) {
       inFlightRef.current.add(key);
       setBuffering(true);
       try {
-        const params = new URLSearchParams({ start: String(key), end: String(key + CHUNK_MS), limit: String(CHUNK_LIMIT) });
-        const r = await fetch(`/api/timetravel?${params}`, { cache: 'no-store' });
+        const r = await fetch(`/api/timetravel?start=${key}&end=${key + CHUNK_MS}&limit=${CHUNK_LIMIT}${feedsQuery()}`, { cache: 'no-store' });
         const data = await r.json();
         if (r.ok) {
           const evs: HistEvent[] = (data.events || [])
@@ -111,7 +119,7 @@ export default function TimeTravelBar({ onFrame, onExit }: Props) {
           if (key <= playheadRef.current && key + CHUNK_MS >= playheadRef.current - TRAIL_MS) emitFrame(playheadRef.current);
         }
       } catch {
-        /* leave unloaded; a later ensure() will retry */
+        /* retry on a later ensure() */
       } finally {
         inFlightRef.current.delete(key);
         if (inFlightRef.current.size === 0) setBuffering(false);
@@ -139,19 +147,16 @@ export default function TimeTravelBar({ onFrame, onExit }: Props) {
     [ensureChunks, emitFrame],
   );
 
-  // Ask the gateway to pull a window into memory; scrubbing within it is then instant.
   const loadWindow = useCallback(
     async (start: number, end: number) => {
       setPreparing(true);
       setPlaying(false);
       try {
-        const params = new URLSearchParams({ start: String(Math.round(start)), end: String(Math.round(end)) });
-        const r = await fetch(`/api/timetravel/load?${params}`, { cache: 'no-store' });
+        const r = await fetch(`/api/timetravel/load?start=${Math.round(start)}&end=${Math.round(end)}${feedsQuery()}`, { cache: 'no-store' });
         const data = await r.json().catch(() => ({}));
         if (r.ok) {
-          const range = { start: Math.round(start), end: Math.round(end) };
-          loadedRef.current = range;
-          setLoaded(range);
+          loadedRef.current = { start: Math.round(start), end: Math.round(end) };
+          setLoaded({ start: Math.round(start), end: Math.round(end) });
           chunksRef.current.clear();
           inFlightRef.current.clear();
           ensureChunks(playheadRef.current, false);
@@ -179,33 +184,32 @@ export default function TimeTravelBar({ onFrame, onExit }: Props) {
     [bounds, loadWindow],
   );
 
-  // Startup: get extent, preload the recent window, park the playhead at its start.
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const br = await fetch('/api/timetravel/bounds', { cache: 'no-store' });
-        const b = await br.json();
-        if (!br.ok || b.min_time == null || b.max_time == null) throw new Error(b.error || 'no data in the lake yet');
-        if (cancelled) return;
-        setBounds({ min: b.min_time, max: b.max_time, count: b.count });
-        const winStart = Math.max(b.min_time, b.max_time - DEFAULT_WINDOW_MS);
-        setStatus('ready');
-        playheadRef.current = winStart;
-        setPlayhead(winStart);
-        await loadWindow(winStart, b.max_time); // preload recent window into gateway RAM
-        if (!cancelled) setHead(winStart);
-      } catch (e) {
-        if (cancelled) return;
-        setErrorMsg(e instanceof Error ? e.message : 'failed to load history');
-        setStatus('error');
-      }
-    })();
-    return () => {
-      cancelled = true;
-      onFrame([]);
-    };
-  }, [onFrame, setHead, loadWindow]);
+  // Kicked off by the operator after picking feeds — nothing queries the lake before this.
+  const beginLoad = useCallback(async () => {
+    const feeds = FEED_OPTIONS.map((f) => f.key).filter((k) => feedSel[k]);
+    if (feeds.length === 0) return;
+    feedsRef.current = feeds;
+    setStatus('loading');
+    setErrorMsg('');
+    try {
+      const br = await fetch('/api/timetravel/bounds', { cache: 'no-store' });
+      const b = await br.json();
+      if (!br.ok || b.min_time == null || b.max_time == null) throw new Error(b.error || 'no data in the lake yet');
+      setBounds({ min: b.min_time, max: b.max_time, count: b.count });
+      const winStart = Math.max(b.min_time, b.max_time - DEFAULT_WINDOW_MS);
+      setStatus('ready');
+      playheadRef.current = winStart;
+      setPlayhead(winStart);
+      await loadWindow(winStart, b.max_time);
+      setHead(winStart);
+    } catch (e) {
+      setErrorMsg(e instanceof Error ? e.message : 'failed to load history');
+      setStatus('error');
+    }
+  }, [feedSel, loadWindow, setHead]);
+
+  // Clear the replay layer on unmount.
+  useEffect(() => () => onFrame([]), [onFrame]);
 
   // Playback loop.
   useEffect(() => {
@@ -224,6 +228,7 @@ export default function TimeTravelBar({ onFrame, onExit }: Props) {
 
   const pct = bounds && bounds.max > bounds.min ? ((playhead - bounds.min) / (bounds.max - bounds.min)) * 100 : 0;
   const outsideWindow = status === 'ready' && !!bounds && !inLoaded(playhead);
+  const anyFeed = FEED_OPTIONS.some((f) => feedSel[f.key]);
 
   return (
     <div className="desktop-only absolute bottom-0 left-0 right-0 z-[300] pointer-events-auto">
@@ -231,19 +236,45 @@ export default function TimeTravelBar({ onFrame, onExit }: Props) {
         className="mx-auto max-w-[980px] mb-3 rounded-lg border px-4 py-2.5 backdrop-blur-md"
         style={{ background: 'rgba(8,10,14,0.88)', borderColor: 'rgba(0,229,255,0.35)', boxShadow: '0 0 30px rgba(0,229,255,0.12)' }}
       >
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-3 flex-wrap">
           <span className="text-[10px] font-mono font-bold tracking-widest text-[#00E5FF] whitespace-nowrap">⏱ TIME TRAVEL</span>
+
+          {status === 'select' && (
+            <>
+              <span className="text-[10px] font-mono text-white/50">pick feeds to replay:</span>
+              {FEED_OPTIONS.map((f) => (
+                <label key={f.key} className="flex items-center gap-1.5 text-[10px] font-mono text-white/75 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={!!feedSel[f.key]}
+                    onChange={(e) => setFeedSel((s) => ({ ...s, [f.key]: e.target.checked }))}
+                    className="accent-[#00E5FF] w-3 h-3"
+                  />
+                  {f.label}
+                </label>
+              ))}
+              <button
+                onClick={beginLoad}
+                disabled={!anyFeed}
+                className="text-[10px] font-mono font-bold px-3 py-1 rounded border border-[#00E5FF]/50 bg-[#00E5FF]/10 text-[#00E5FF] hover:bg-[#00E5FF]/20 disabled:opacity-30 disabled:cursor-not-allowed"
+                title="Query only the selected feeds"
+              >
+                LOAD TIME TRAVEL ▸
+              </button>
+              <span className="text-[9px] font-mono text-white/30 whitespace-nowrap">Maritime is heavy — leave it off unless you need it</span>
+            </>
+          )}
 
           {(status === 'loading' || preparing) && (
             <span className="flex items-center gap-2 text-[10px] font-mono text-white/60">
               <span className="inline-block w-3 h-3 rounded-full border-2 border-[#00E5FF]/40 border-t-[#00E5FF] animate-spin" />
-              {status === 'loading' ? 'loading lake extent…' : 'loading window (one-time)…'}
+              {status === 'loading' && !preparing ? 'reading lake extent…' : 'loading window (one-time)…'}
             </span>
           )}
 
           {status === 'error' && (
             <span className="text-[10px] font-mono text-[#FF6B6B] flex-1">
-              {errorMsg} — check the gateway HIVE_* config and that rows exist in events_iceberg.
+              {errorMsg} — check the gateway HIVE_* config and that rows exist for the chosen feeds.
             </span>
           )}
 
@@ -270,7 +301,6 @@ export default function TimeTravelBar({ onFrame, onExit }: Props) {
               />
 
               {buffering && <span className="inline-block w-2.5 h-2.5 rounded-full border-2 border-[#00E5FF]/40 border-t-[#00E5FF] animate-spin" title="loading chunk…" />}
-
               <span className="text-[10px] font-mono text-white/80 tabular-nums whitespace-nowrap min-w-[190px] text-right">{fmt(playhead)}</span>
 
               <select
@@ -286,7 +316,7 @@ export default function TimeTravelBar({ onFrame, onExit }: Props) {
 
           <button
             onClick={onExit}
-            className="flex items-center justify-center w-8 h-8 rounded border border-white/15 bg-white/5 hover:bg-white/10 transition-colors ml-1"
+            className="flex items-center justify-center w-8 h-8 rounded border border-white/15 bg-white/5 hover:bg-white/10 transition-colors ml-auto"
             title="Exit TimeTravel"
           >
             <X className="w-4 h-4 text-white/70" />
@@ -308,7 +338,7 @@ export default function TimeTravelBar({ onFrame, onExit }: Props) {
                 const clamped = Math.min(bounds.max, Math.max(bounds.min, ms));
                 setPlaying(false);
                 setHead(clamped);
-                if (!inLoaded(clamped)) loadAround(clamped); // deliberate jump outside the buffer → reload
+                if (!inLoaded(clamped)) loadAround(clamped);
               }}
               className="text-[10px] font-mono bg-black/50 border border-white/15 rounded px-2 py-1 text-white/85 [color-scheme:dark]"
             />
@@ -316,21 +346,19 @@ export default function TimeTravelBar({ onFrame, onExit }: Props) {
               <button
                 onClick={() => loadAround(playhead)}
                 className="text-[9px] font-mono px-2 py-1 rounded border border-[#FFB300]/50 bg-[#FFB300]/10 text-[#FFCA28] hover:bg-[#FFB300]/20"
-                title="This time is outside the loaded window — load it (one Hive query)"
+                title="This time is outside the loaded window — load it"
               >
                 ⟳ LOAD THIS WINDOW
               </button>
             )}
-            <span className="text-[9px] font-mono text-white/30 whitespace-nowrap">picker jumps the playhead · then press play</span>
+            <span className="text-[9px] font-mono text-white/30 whitespace-nowrap">feeds: {feedsRef.current.join(', ') || '—'}</span>
           </div>
         )}
 
         {status === 'ready' && bounds && (
           <div className="mt-1 flex justify-between text-[8px] font-mono text-white/35">
             <span>{fmt(bounds.min)}</span>
-            <span>
-              {bounds.count.toLocaleString()} events · loaded window {loaded ? `${fmt(loaded.start)} → ${fmt(loaded.end)}` : '—'}
-            </span>
+            <span>loaded window {loaded ? `${fmt(loaded.start)} → ${fmt(loaded.end)}` : '—'}</span>
             <span>{fmt(bounds.max)}</span>
           </div>
         )}
