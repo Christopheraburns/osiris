@@ -13,7 +13,8 @@ export async function GET(req: Request) {
   const qs = searchParams.toString();
   const url = `${gatewayBaseUrl()}/history?${qs}`;
   try {
-    const res = await fetch(url, { cache: 'no-store', signal: AbortSignal.timeout(60000) });
+    // Window scan of up to 50k rows over Hive/Tez — allow for cold-start + scan.
+    const res = await fetch(url, { cache: 'no-store', signal: AbortSignal.timeout(120000) });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
       return NextResponse.json(

@@ -11,7 +11,8 @@ export const dynamic = 'force-dynamic';
 export async function GET() {
   const url = `${gatewayBaseUrl()}/history/bounds`;
   try {
-    const res = await fetch(url, { cache: 'no-store', signal: AbortSignal.timeout(20000) });
+    // Hive/Tez cold-start can take 20-30s for the MIN/MAX/COUNT — give it room.
+    const res = await fetch(url, { cache: 'no-store', signal: AbortSignal.timeout(90000) });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
       return NextResponse.json(

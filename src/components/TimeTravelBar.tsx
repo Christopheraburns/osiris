@@ -20,76 +20,118 @@ interface Props {
   onExit: () => void;
 }
 
-const SPEEDS = [1, 10, 60, 300, 1200];
-const TRAIL_MS = 120_000; // show each asset's last known position within a 2-min trail
+const SPEEDS = [10, 60, 300, 1200, 3600];
+const TRAIL_MS = 120_000; // show each asset's last position within a 2-min trail
 const TICK_MS = 100; // playback resolution (10 fps)
+const CHUNK_MS = 5 * 60_000; // history is loaded in 5-minute chunks, on demand
+const CHUNK_LIMIT = 20000; // safety cap per chunk
 
-const fmt = (ms: number) =>
-  new Date(ms).toISOString().replace('T', '  ').replace('.000Z', 'Z').slice(0, 21) + ' UTC';
+const fmt = (ms: number) => new Date(ms).toISOString().replace('T', ' ').slice(0, 19) + ' UTC';
+const chunkKeyOf = (t: number) => Math.floor(t / CHUNK_MS) * CHUNK_MS;
 
 export default function TimeTravelBar({ onFrame, onExit }: Props) {
   const [status, setStatus] = useState<'loading' | 'ready' | 'error'>('loading');
-  const [errorMsg, setErrorMsg] = useState<string>('');
+  const [errorMsg, setErrorMsg] = useState('');
   const [bounds, setBounds] = useState<{ min: number; max: number; count: number } | null>(null);
   const [playing, setPlaying] = useState(false);
-  const [speed, setSpeed] = useState(60);
+  const [speed, setSpeed] = useState(300);
   const [playhead, setPlayhead] = useState(0);
+  const [buffering, setBuffering] = useState(false);
 
-  const eventsRef = useRef<HistEvent[]>([]);
+  const chunksRef = useRef<Map<number, HistEvent[]>>(new Map());
+  const inFlightRef = useRef<Set<number>>(new Set());
   const playheadRef = useRef(0);
   const playingRef = useRef(false);
-  const speedRef = useRef(60);
-
+  const speedRef = useRef(300);
   playingRef.current = playing;
   speedRef.current = speed;
 
-  // Compute the frame (latest position per asset within the trailing window) and emit it.
+  const eventsInRange = useCallback((from: number, to: number): HistEvent[] => {
+    const out: HistEvent[] = [];
+    for (let k = chunkKeyOf(from); k <= chunkKeyOf(to); k += CHUNK_MS) {
+      const arr = chunksRef.current.get(k);
+      if (!arr) continue;
+      for (let i = 0; i < arr.length; i++) {
+        const e = arr[i];
+        if (e.t >= from && e.t <= to) out.push(e);
+      }
+    }
+    return out;
+  }, []);
+
   const emitFrame = useCallback(
     (head: number) => {
-      const from = head - TRAIL_MS;
+      const evs = eventsInRange(head - TRAIL_MS, head);
       const latest = new Map<string, HistEvent>();
-      const evs = eventsRef.current;
-      for (let i = 0; i < evs.length; i++) {
-        const e = evs[i];
-        if (e.t > head) break; // sorted ascending
-        if (e.t >= from) latest.set(e.asset_id, e);
+      for (const e of evs) {
+        const prev = latest.get(e.asset_id);
+        if (!prev || e.t > prev.t) latest.set(e.asset_id, e);
       }
       onFrame(Array.from(latest.values()));
     },
-    [onFrame],
+    [eventsInRange, onFrame],
+  );
+
+  const loadChunk = useCallback(
+    async (key: number) => {
+      if (key < 0 || chunksRef.current.has(key) || inFlightRef.current.has(key)) return;
+      inFlightRef.current.add(key);
+      setBuffering(true);
+      try {
+        const params = new URLSearchParams({ start: String(key), end: String(key + CHUNK_MS), limit: String(CHUNK_LIMIT) });
+        const r = await fetch(`/api/timetravel?${params}`, { cache: 'no-store' });
+        const data = await r.json();
+        if (r.ok) {
+          const evs: HistEvent[] = (data.events || [])
+            .filter((e: HistEvent) => e.t != null)
+            .sort((a: HistEvent, b: HistEvent) => a.t - b.t);
+          chunksRef.current.set(key, evs);
+          // If the just-loaded chunk covers the current frame window, refresh the picture.
+          if (key <= playheadRef.current && key + CHUNK_MS >= playheadRef.current - TRAIL_MS) {
+            emitFrame(playheadRef.current);
+          }
+        }
+      } catch {
+        /* leave unloaded; a later ensure() will retry this key */
+      } finally {
+        inFlightRef.current.delete(key);
+        if (inFlightRef.current.size === 0) setBuffering(false);
+      }
+    },
+    [emitFrame],
+  );
+
+  const ensureChunks = useCallback(
+    (head: number, prefetch: boolean) => {
+      loadChunk(chunkKeyOf(head)); // current
+      loadChunk(chunkKeyOf(head - TRAIL_MS)); // trail may cross a boundary
+      if (prefetch) loadChunk(chunkKeyOf(head) + CHUNK_MS); // next, while playing
+    },
+    [loadChunk],
   );
 
   const setHead = useCallback(
     (head: number) => {
       playheadRef.current = head;
       setPlayhead(head);
+      ensureChunks(head, playingRef.current);
       emitFrame(head);
     },
-    [emitFrame],
+    [ensureChunks, emitFrame],
   );
 
-  // Load bounds, then the whole window's events once.
+  // Load the scrubber extent once (cached server-side; first call pays Tez cold-start).
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
         const br = await fetch('/api/timetravel/bounds', { cache: 'no-store' });
         const b = await br.json();
-        if (!br.ok || b.min_time == null || b.max_time == null) {
-          throw new Error(b.error || 'no data in the lake yet');
-        }
+        if (!br.ok || b.min_time == null || b.max_time == null) throw new Error(b.error || 'no data in the lake yet');
         if (cancelled) return;
         setBounds({ min: b.min_time, max: b.max_time, count: b.count });
-
-        const params = new URLSearchParams({ start: String(b.min_time), end: String(b.max_time), limit: '50000' });
-        const er = await fetch(`/api/timetravel?${params}`, { cache: 'no-store' });
-        const data = await er.json();
-        if (!er.ok) throw new Error(data.error || 'history fetch failed');
-        if (cancelled) return;
-        const evs: HistEvent[] = (data.events || []).filter((e: HistEvent) => e.t != null).sort((a: HistEvent, b: HistEvent) => a.t - b.t);
-        eventsRef.current = evs;
         setStatus('ready');
-        setHead(b.min_time); // start at the beginning
+        setHead(b.min_time); // park at the start and load the first chunk
       } catch (e) {
         if (cancelled) return;
         setErrorMsg(e instanceof Error ? e.message : 'failed to load history');
@@ -98,7 +140,7 @@ export default function TimeTravelBar({ onFrame, onExit }: Props) {
     })();
     return () => {
       cancelled = true;
-      onFrame([]); // clear the layer on unmount
+      onFrame([]);
     };
   }, [onFrame, setHead]);
 
@@ -130,7 +172,7 @@ export default function TimeTravelBar({ onFrame, onExit }: Props) {
 
           {status === 'loading' && (
             <span className="flex items-center gap-2 text-[10px] font-mono text-white/60">
-              <span className="inline-block w-3 h-3 rounded-full border-2 border-[#00E5FF]/40 border-t-[#00E5FF] animate-spin" /> loading lake history…
+              <span className="inline-block w-3 h-3 rounded-full border-2 border-[#00E5FF]/40 border-t-[#00E5FF] animate-spin" /> loading lake extent…
             </span>
           )}
 
@@ -168,6 +210,8 @@ export default function TimeTravelBar({ onFrame, onExit }: Props) {
                 style={{ background: `linear-gradient(to right, #00E5FF ${pct}%, rgba(255,255,255,0.15) ${pct}%)` }}
               />
 
+              {buffering && <span className="inline-block w-2.5 h-2.5 rounded-full border-2 border-[#00E5FF]/40 border-t-[#00E5FF] animate-spin" title="loading chunk…" />}
+
               <span className="text-[10px] font-mono text-white/80 tabular-nums whitespace-nowrap min-w-[190px] text-right">
                 {fmt(playhead)}
               </span>
@@ -196,7 +240,7 @@ export default function TimeTravelBar({ onFrame, onExit }: Props) {
         {status === 'ready' && bounds && (
           <div className="mt-1 flex justify-between text-[8px] font-mono text-white/35">
             <span>{fmt(bounds.min)}</span>
-            <span>{bounds.count.toLocaleString()} events · replaying from lakehouse</span>
+            <span>{bounds.count.toLocaleString()} events · streaming 5-min chunks from lakehouse</span>
             <span>{fmt(bounds.max)}</span>
           </div>
         )}

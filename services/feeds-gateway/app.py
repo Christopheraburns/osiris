@@ -45,6 +45,18 @@ async def lifespan(app: FastAPI):
     app.state.store = store
     log.info("feeds-gateway started; migrated feeds=%s", migrated_feeds())
     db.log_row("info", "gateway", "feeds-gateway started", data={"migrated": migrated_feeds()})
+
+    # Warm the TimeTravel/Hive path in the background: heats the Tez session and
+    # pre-caches bounds so the operator's first click isn't stuck on cold-start.
+    if history.configured():
+        async def _warm_history() -> None:
+            try:
+                b = await asyncio.to_thread(history.bounds, True)
+                log.info("history warm-up ok: %s", b)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("history warm-up failed (retries on first request): %s", exc)
+        asyncio.create_task(_warm_history(), name="history-warmup")
+
     try:
         yield
     finally:
