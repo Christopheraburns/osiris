@@ -22,6 +22,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 import db
 import graph
+import history
 import intel
 import llm
 from consumer import FeedStore, consume_loop
@@ -157,6 +158,38 @@ async def intel_ask(request: Request) -> StreamingResponse:
         media_type="application/x-ndjson",
         headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
     )
+
+
+# ── TimeTravel: historical replay read from the Iceberg lake (via Hive) ───────
+
+@app.get("/history/bounds")
+async def history_bounds() -> JSONResponse:
+    """Time extent + row count of the lake -- drives the replay scrubber range."""
+    if not history.configured():
+        raise HTTPException(status_code=503, detail="history not configured (set HIVE_* env vars)")
+    try:
+        data = await asyncio.to_thread(history.bounds)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("history bounds failed: %s", exc)
+        raise HTTPException(status_code=503, detail=f"history unavailable: {exc}")
+    return JSONResponse({**data, "timestamp": _now_iso()})
+
+
+@app.get("/history")
+async def history_window(start: int, end: int, types: str = "", limit: int = 50000) -> JSONResponse:
+    """Positional events in [start, end] epoch-ms, ordered by time -- replay frames.
+
+    ``types`` is a comma-separated asset_type filter (e.g. FLIGHT,VESSEL).
+    """
+    if not history.configured():
+        raise HTTPException(status_code=503, detail="history not configured (set HIVE_* env vars)")
+    tlist = [t for t in types.split(",") if t]
+    try:
+        events = await asyncio.to_thread(history.window, start, end, tlist or None, limit)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("history window failed: %s", exc)
+        raise HTTPException(status_code=503, detail=f"history unavailable: {exc}")
+    return JSONResponse({"events": events, "count": len(events), "timestamp": _now_iso()})
 
 
 @app.get("/feeds/{feed}")

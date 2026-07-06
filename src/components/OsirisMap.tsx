@@ -23,6 +23,8 @@ interface OsirisMapProps {
   scanTargets?: any[];
   demoMode?: boolean;
   theme?: 'core' | 'ghost';
+  timeTravelActive?: boolean;
+  timeTravelFrame?: { asset_id: string; asset_type: string; lat: number; lng: number; t: number }[];
 }
 
 function computeSolarTerminator(): [number, number][] {
@@ -47,7 +49,7 @@ function computeSolarTerminator(): [number, number][] {
 
 const EMPTY_FC = { type: 'FeatureCollection' as const, features: [] };
 
-function OsirisMap({ data, activeLayers, onEntityClick, onMouseCoords, onRightClick, onViewStateChange, flyToLocation, projection = 'globe', mapStyle = 'dark', sweepData, scanTargets = [], demoMode = false, theme = 'core' }: OsirisMapProps) {
+function OsirisMap({ data, activeLayers, onEntityClick, onMouseCoords, onRightClick, onViewStateChange, flyToLocation, projection = 'globe', mapStyle = 'dark', sweepData, scanTargets = [], demoMode = false, theme = 'core', timeTravelActive = false, timeTravelFrame = [] }: OsirisMapProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
   const popupRef = useRef<maplibregl.Popup | null>(null);
@@ -192,7 +194,7 @@ function OsirisMap({ data, activeLayers, onEntityClick, onMouseCoords, onRightCl
       createDot(map, 'dot-fire', isGhost ? phantomPurple : '#E65100', 10);
       createDot(map, 'dot-cctv', cameraColor, 10);
 
-      const sources = ['flights','military','jets','private-fl','satellites','earthquakes','gdelt','gps-jamming','day-night','cctv','fires','weather','infrastructure','maritime','maritime-choke','maritime-ships','live-news','sigint-news','conflict-zones', 'war-alerts-targets', 'war-alerts-lines', 'balloons', 'radiation', 'ip-sweep-devices', 'ip-sweep-pulse', 'ip-sweep-connections', 'scan-targets', 'sdk-entities', 'sdk-links', 'malware-nodes', 'network-mesh'];
+      const sources = ['flights','military','jets','private-fl','satellites','earthquakes','gdelt','gps-jamming','day-night','cctv','fires','weather','infrastructure','maritime','maritime-choke','maritime-ships','live-news','sigint-news','conflict-zones', 'war-alerts-targets', 'war-alerts-lines', 'balloons', 'radiation', 'ip-sweep-devices', 'ip-sweep-pulse', 'ip-sweep-connections', 'scan-targets', 'sdk-entities', 'sdk-links', 'malware-nodes', 'network-mesh', 'timetravel'];
       sources.forEach(s => map.addSource(s, { type: 'geojson', data: EMPTY_FC }));
 
       // Warning icon generator (parameterized — eliminates 3x copy-paste)
@@ -565,6 +567,22 @@ function OsirisMap({ data, activeLayers, onEntityClick, onMouseCoords, onRightCl
         'line-width': ['interpolate',['linear'],['zoom'], 1, 0.3, 5, 1, 10, 2],
         'line-opacity': ['interpolate',['linear'],['zoom'], 1, 0.3, 5, 0.45, 10, 0.7],
       }});
+
+      // TimeTravel replay entities — amber "historical" halo + dot, colored by domain
+      map.addLayer({ id: 'tt-glow', type: 'circle', source: 'timetravel', paint: {
+        'circle-radius': ['interpolate',['linear'],['zoom'], 1,5, 5,9, 10,16],
+        'circle-color': '#FFB300', 'circle-opacity': 0.10, 'circle-blur': 1,
+      }});
+      map.addLayer({ id: 'tt-dots', type: 'circle', source: 'timetravel', paint: {
+        'circle-radius': ['interpolate',['linear'],['zoom'], 1,2.5, 5,4.5, 10,7],
+        'circle-color': ['match', ['get','domain'], 'AIR','#FFCA28', 'SEA','#4FC3F7', '#FFB300'],
+        'circle-opacity': 0.9,
+        'circle-stroke-width': 1, 'circle-stroke-color': '#FFB300', 'circle-stroke-opacity': 0.5,
+      }});
+      map.addLayer({ id: 'tt-label', type: 'symbol', source: 'timetravel', minzoom: 5, layout: {
+        'text-field': ['get','label'], 'text-size': 9, 'text-font': ['Open Sans Regular'],
+        'text-offset': [0, 1.2], 'text-allow-overlap': false,
+      }, paint: { 'text-color': '#FFCA28', 'text-halo-color': '#000', 'text-halo-width': 1 }});
 
       // Maritime Ships (moving entities) — ocean teal family
       map.addLayer({ id: 'ship-dots', type: 'circle', source: 'maritime-ships', paint: {
@@ -1244,6 +1262,26 @@ function OsirisMap({ data, activeLayers, onEntityClick, onMouseCoords, onRightCl
     setGeo('maritime-choke', activeLayers.maritime && data.maritime_chokepoints ? data.maritime_chokepoints.map((c: any) => ({ type: 'Feature', geometry: { type: 'Point', coordinates: [c.lng, c.lat] }, properties: { name: c.name, traffic: c.traffic, risk: c.risk } })) : []);
     setGeo('maritime-ships', activeLayers.vessels && data.maritime_ships ? data.maritime_ships.map((s: any) => ({ type: 'Feature', geometry: { type: 'Point', coordinates: [s.lng, s.lat] }, properties: { id: s.id ?? s.mmsi, mmsi: s.mmsi, imo: s.imo, has_imo: !!s.imo, name: s.name || s.mmsi?.toString(), type: s.type || 'cargo', speed: s.speed, heading: s.heading, destination: s.destination, flag: s.flag } })) : []);
   }, [mapReady, data.maritime_ports, data.maritime_chokepoints, data.maritime_ships, activeLayers.maritime, activeLayers.vessels, setGeo]);
+
+  // ── TimeTravel replay: paint the current frame + hide live moving layers ──
+  useEffect(() => {
+    if (!mapReady) return;
+    const frame = timeTravelActive && timeTravelFrame ? timeTravelFrame : [];
+    setGeo('timetravel', frame.map((e) => {
+      const at = String(e.asset_type || '').toUpperCase();
+      const domain = at.includes('VESSEL') || at.includes('SHIP') ? 'SEA'
+        : (at.includes('FLIGHT') || at.includes('AIR') || at.includes('COMMERCIAL') || at.includes('MILITARY') || at.includes('JET') || at.includes('PRIVATE')) ? 'AIR'
+        : 'OTHER';
+      return { type: 'Feature' as const, geometry: { type: 'Point' as const, coordinates: [e.lng, e.lat] }, properties: { domain, label: e.asset_id } };
+    }));
+    // While replaying, suppress the live moving layers so the historical picture is unambiguous;
+    // when TimeTravel is off, restore them from activeLayers.
+    setVis(['fl-commercial'], !timeTravelActive && !!activeLayers.flights);
+    setVis(['fl-private'], !timeTravelActive && !!activeLayers.private);
+    setVis(['fl-jets'], !timeTravelActive && !!activeLayers.jets);
+    setVis(['fl-military'], !timeTravelActive && !!activeLayers.military);
+    setVis(['ship-dots','ship-label'], !timeTravelActive && !!activeLayers.vessels);
+  }, [mapReady, timeTravelActive, timeTravelFrame, activeLayers.flights, activeLayers.private, activeLayers.jets, activeLayers.military, activeLayers.vessels, setGeo]);
 
   useEffect(() => {
     if (!mapReady) return;

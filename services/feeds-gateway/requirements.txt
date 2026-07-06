@@ -8,3 +8,6 @@ pydantic==2.10.4
 psycopg[binary]==3.2.3
 neo4j==5.28.1
 httpx==0.28.1
+# TimeTravel history reader — HiveServer2 (Knox/LDAP) over the Iceberg lake.
+impyla==0.19.0
+thrift-sasl==0.4.3

@@ -24,6 +24,7 @@ const EntityGraphPanel = dynamic(() => import('@/components/EntityGraphPanel'));
 const TokenPanel = dynamic(() => import('@/components/TokenPanel'));
 const RecorderControl = dynamic(() => import('@/components/RecorderControl'));
 const SecuredConnection = dynamic(() => import('@/components/SecuredConnection'));
+const TimeTravelBar = dynamic(() => import('@/components/TimeTravelBar'), { ssr: false });
 
 /** Promo / donation UI — set true to restore $OSIRIS chart and Ko-fi link */
 const SHOW_PROMO_UI = false;
@@ -127,6 +128,8 @@ export default function Dashboard() {
   const [entityGraphTarget, setEntityGraphTarget] = useState<{ type: string; id: string; label?: string; properties?: Record<string, any> } | null>(null);
   const [demoMode, setDemoMode] = useState(false);
   const [osirisTheme, setOsirisTheme] = useState<'core'|'ghost'>('ghost');
+  const [timeTravelActive, setTimeTravelActive] = useState(false);
+  const [timeTravelFrame, setTimeTravelFrame] = useState<any[]>([]);
 
   useEffect(() => {
     document.body.className = osirisTheme === 'core' ? '' : `theme-${osirisTheme}`;
@@ -837,8 +840,17 @@ export default function Dashboard() {
           scanTargets={scanTargets}
           demoMode={demoMode}
           theme={osirisTheme}
+          timeTravelActive={timeTravelActive}
+          timeTravelFrame={timeTravelFrame}
         />
       </ErrorBoundary>
+
+      {timeTravelActive && (
+        <TimeTravelBar
+          onFrame={setTimeTravelFrame}
+          onExit={() => { setTimeTravelActive(false); setTimeTravelFrame([]); }}
+        />
+      )}
 
 
       {/* ── MAP VIEW CONTROLS (3D/2D + SATELLITE TOGGLE) ── */}
@@ -903,6 +915,14 @@ export default function Dashboard() {
         <RecorderControl />
 
         <SecuredConnection />
+
+        <button
+          onClick={() => { setTimeTravelActive(v => !v); if (timeTravelActive) setTimeTravelFrame([]); }}
+          className={`pointer-events-auto glass-panel px-3 py-1.5 flex items-center gap-1.5 text-[8px] font-mono tracking-widest transition-opacity border ${timeTravelActive ? 'border-[#00E5FF]/60 bg-[#00E5FF]/10 text-[#00E5FF]' : 'border-white/10 bg-black/20 text-[var(--text-secondary)] hover:opacity-80'}`}
+          title="Replay historical events from the lakehouse"
+        >
+          <span className="font-bold">⏱ TIME TRAVEL</span>
+        </button>
 
         <a href="/logs" className="pointer-events-auto glass-panel px-3 py-1.5 flex items-center gap-1.5 text-[8px] font-mono tracking-widest hover:opacity-80 transition-opacity border-white/10 bg-black/20">
           <span className="font-bold text-[var(--text-secondary)]">LOGS</span>

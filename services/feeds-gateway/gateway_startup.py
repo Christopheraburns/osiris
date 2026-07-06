@@ -42,7 +42,7 @@ os.chdir(GATEWAY_DIR)
 sys.path.insert(0, GATEWAY_DIR)
  
 # ── 2) Install dependencies on cold start (skipped if already importable) ──
-_REQUIRED = ("fastapi", "uvicorn", "aiokafka", "psycopg", "neo4j", "httpx")
+_REQUIRED = ("fastapi", "uvicorn", "aiokafka", "psycopg", "neo4j", "httpx", "impala")
 if any(importlib.util.find_spec(m) is None for m in _REQUIRED):
     print("[launcher] installing feeds-gateway requirements ...", flush=True)
     subprocess.check_call(

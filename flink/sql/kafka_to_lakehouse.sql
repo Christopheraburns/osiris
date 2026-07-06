@@ -33,84 +33,42 @@
 -- Feeds emit UTC ISO-8601; interpret naive timestamps as UTC.
 SET 'table.local-time-zone' = 'UTC';
 SET 'execution.checkpointing.interval' = '10s';
-SET 'pipeline.name' = 'osiris-kafka-to-lakehouse';
+SET 'table.local-time-zone' = 'UTC';
 
-CREATE CATALOG osiris_iceberg WITH (
-  'type' = 'iceberg',
-  'catalog-type' = 'hive',
-  'uri' = 'thrift://osiris-hive-metastore:9083',
-  'warehouse' = 's3a://osiris-lake/warehouse'
-);
-
--- Single source: the whole Kafka value as one UTF-8 string (preserves exact bytes).
-CREATE TEMPORARY TABLE kafka_src (
-  payload STRING
+-- Read the whole Kafka value as one JSON string.
+CREATE TEMPORARY TABLE IF NOT EXISTS osiris_events_raw (
+    payload STRING
 ) WITH (
-  'connector' = 'kafka',
-  'topic' = 'osiris.entities',
-  'properties.bootstrap.servers' = 'osiris-kafka:9092',
-  'properties.group.id' = 'flink-lakehouse',
-  'scan.startup.mode' = 'earliest-offset',
-  'format' = 'raw'
+    'connector' = 'kafka',
+    'topic' = 'osiris-events',
+    'scan.startup.mode' = 'earliest-offset',
+    'format' = 'raw',
+    'properties.group.id' = 'flink-lakehouse-events',
+    -- ↓↓ paste bootstrap.servers / security.protocol / sasl.* / ssl.* from your working table ↓↓
+    'properties.bootstrap.servers' = 'intelligence-service-kafka-corebroker0.se-sandb.a465-9q4k.cloudera.site:9093,
+    intelligence-service-kafka-corebroker2.se-sandb.a465-9q4k.cloudera.site:9093,
+    intelligence-service-kafka-corebroker1.se-sandb.a465-9q4k.cloudera.site:9093',
+    'properties.security.protocol' = 'SASL_SSL',
+    'properties.sasl.mechanism' = 'PLAIN',
+    'properties.sasl.jaas.config' = 'org.apache.kafka.common.security.plain.PlainLoginModule required username="cburns" password="SuperSecret#1";'
+    -- ,'properties.ssl.truststore.location' = '...' -- include if your working table has them
+    -- ,'properties.ssl.truststore.password' = '...'
 );
 
--- Parse once. ISO-8601 'YYYY-MM-DDTHH:MM:SSZ' -> normalize -> TIMESTAMP -> LTZ (UTC).
-CREATE TEMPORARY VIEW parsed AS
+INSERT INTO events_iceberg
 SELECT
-  payload,
-  JSON_VALUE(payload, '$.source')                                         AS source,
-  JSON_VALUE(payload, '$.ingest_run_id')                                  AS ingest_run_id,
-  CAST(JSON_VALUE(payload, '$.schema_version') AS INT)                    AS schema_version,
-  CAST(TO_TIMESTAMP(REPLACE(REPLACE(JSON_VALUE(payload,'$.captured_at'),'T',' '),'Z','')) AS TIMESTAMP_LTZ(6)) AS captured_at,
-  JSON_VALUE(payload, '$.entity.id')                                      AS entity_id,
-  JSON_VALUE(payload, '$.entity.name')                                    AS name,
-  JSON_VALUE(payload, '$.entity.domain')                                  AS domain,
-  JSON_VALUE(payload, '$.entity.entityType')                              AS entity_type,
-  CAST(JSON_VALUE(payload, '$.entity.position.lat') AS DOUBLE)            AS lat,
-  CAST(JSON_VALUE(payload, '$.entity.position.lng') AS DOUBLE)            AS lng,
-  CAST(JSON_VALUE(payload, '$.entity.position.alt') AS DOUBLE)            AS alt,
-  CAST(JSON_VALUE(payload, '$.entity.position.heading') AS DOUBLE)        AS heading,
-  CAST(JSON_VALUE(payload, '$.entity.position.speed') AS DOUBLE)          AS speed,
-  JSON_VALUE(payload, '$.entity.threat')                                  AS threat,
-  JSON_VALUE(payload, '$.entity.classification')                          AS classification,
-  CAST(JSON_VALUE(payload, '$.entity.confidence') AS DOUBLE)             AS confidence,
-  JSON_VALUE(payload, '$.entity.source.provider')                         AS provider,
-  JSON_VALUE(payload, '$.entity.source.feed')                             AS feed,
-  JSON_VALUE(payload, '$.entity.source.originalId')                       AS source_original_id,
-  CAST(TO_TIMESTAMP(REPLACE(REPLACE(JSON_VALUE(payload,'$.entity.timestamp'),'T',' '),'Z','')) AS TIMESTAMP_LTZ(6)) AS event_time,
-  JSON_QUERY(payload, '$.entity.properties')                              AS properties,
-  CAST(JSON_VALUE(payload, '$.entity.properties.mag') AS DOUBLE)          AS magnitude,
-  CAST(JSON_VALUE(payload, '$.entity.properties.brightness') AS DOUBLE)   AS brightness
-FROM kafka_src;
-
-EXECUTE STATEMENT SET
-BEGIN
-  -- Bronze: every message, exact payload.
-  INSERT INTO osiris_iceberg.lake.raw_records
-  SELECT
-    source, payload, provider, feed, ingest_run_id, schema_version,
-    captured_at, CURRENT_TIMESTAMP, CAST(CURRENT_TIMESTAMP AS DATE)
-  FROM parsed;
-
-  -- Silver observations: non-event feeds (tracks / readings).
-  INSERT INTO osiris_iceberg.lake.observations
-  SELECT
-    entity_id, CAST(NULL AS STRING) AS canonical_id, domain, entity_type, name,
-    lat, lng, alt, heading, speed, threat, classification, confidence,
-    provider, feed, source_original_id,
-    event_time, captured_at, CURRENT_TIMESTAMP, ingest_run_id, schema_version,
-    properties, CAST(event_time AS DATE)
-  FROM parsed
-  WHERE source NOT IN ('earthquakes','fires','gdelt','news','live-news','weather');
-
-  -- Silver events: immutable occurrences.
-  INSERT INTO osiris_iceberg.lake.events
-  SELECT
-    entity_id AS event_id, entity_type AS event_type, domain, name,
-    lat, lng, magnitude, brightness,
-    provider, feed, source_original_id,
-    event_time, captured_at, CURRENT_TIMESTAMP, ingest_run_id, schema_version,
-    properties, CAST(event_time AS DATE)
-  FROM parsed
-  WHERE source IN ('earthquakes','fires','gdelt','news','live-news','weather');
-END;
+    JSON_VALUE(payload, '$.entity.id') AS event_id,
+    COALESCE(JSON_VALUE(payload,'$.entity.source.originalId'), JSON_VALUE(payload,'$.entity.id')) AS asset_id, JSON_VALUE(payload, '$.entity.entityType') AS asset_type,
+    CAST(JSON_VALUE(payload, '$.entity.position.lat') AS DOUBLE) AS lat,
+    CAST(JSON_VALUE(payload, '$.entity.position.lng') AS DOUBLE) AS lon,
+    CAST(TO_TIMESTAMP(REPLACE(REPLACE(JSON_VALUE(payload,'$.entity.timestamp'),'T',' '),'Z','')) AS TIMESTAMP(6)) AS event_time,
+    CAST(LOCALTIMESTAMP AS TIMESTAMP(6)) AS ingest_time,
+    JSON_VALUE(payload, '$.trace_id') AS trace_id,
+    JSON_VALUE(payload, '$.ingest_run_id') AS ingest_run_id,
+    JSON_VALUE(payload, '$.entity.source.provider') AS source_provider,
+    JSON_VALUE(payload, '$.entity.source.feed') AS source_feed,
+    JSON_VALUE(payload, '$.captured_at') AS captured_at,
+    CAST(JSON_VALUE(payload, '$.schema_version') AS BIGINT) AS schema_version,
+    CAST(JSON_VALUE(payload, '$.entity.confidence') AS DOUBLE) AS source_confidence,
+    payload AS payload
+FROM osiris_events_raw;
