@@ -55,6 +55,11 @@ const MILITARY_INDICATORS = new Set([
 
 const AIRLINE_CODE_RE = /^([A-Z]{3})\d/;
 
+/** Landed / on-ground aircraft (baro alt below ~100 ft) are excluded from the tracker. */
+function isAirborne(f: { grounded?: boolean }): boolean {
+  return !f.grounded;
+}
+
 async function fetchRegion(region: typeof REGIONS[0]): Promise<any[]> {
   try {
     const url = `https://api.adsb.lol/v2/point/${region.lat}/${region.lon}/${region.dist}`;
@@ -157,6 +162,7 @@ export async function GET() {
     const jets: any[] = [];
     const military: any[] = [];
     for (const f of flights) {
+      if (!isAirborne(f)) continue;
       switch (f.category) {
         case 'military': military.push(f); break;
         case 'jet': jets.push(f); break;
@@ -164,13 +170,14 @@ export async function GET() {
         default: commercial.push(f);
       }
     }
+    const airborneTotal = commercial.length + privateFl.length + jets.length + military.length;
     return NextResponse.json({
       commercial_flights: commercial,
       private_flights: privateFl,
       private_jets: jets,
       military_flights: military,
       gps_jamming: [], // not computed on the gateway path
-      total: flights.length,
+      total: airborneTotal,
       timestamp: new Date().toISOString(),
     }, { headers: { 'Cache-Control': 'no-store' } });
   }
@@ -273,7 +280,7 @@ export async function GET() {
 
     for (const raw of allRaw) {
       const flight = classifyFlight(raw);
-      if (!flight) continue;
+      if (!flight || !isAirborne(flight)) continue;
 
       // GPS jamming detection
       if (typeof flight.nac_p === 'number' && flight.nac_p <= JAMMING_NACAP_THRESHOLD && !flight.grounded) {
@@ -302,7 +309,7 @@ export async function GET() {
       private_jets: jets,
       military_flights: military,
       gps_jamming: jammingZones,
-      total: allRaw.length,
+      total: commercial.length + privateFl.length + jets.length + military.length,
       timestamp: new Date().toISOString(),
     };
   })();

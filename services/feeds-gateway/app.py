@@ -252,6 +252,11 @@ async def history_window(start: int, end: int, types: str = "", feeds: str = "",
     return JSONResponse({"events": events, "count": len(events), "timestamp": _now_iso()})
 
 
+def _airborne_flights(items: list[dict]) -> list[dict]:
+    """Drop grounded aircraft — landed planes should not appear on the tracker."""
+    return [f for f in items if not f.get("grounded")]
+
+
 @app.get("/feeds/{feed}")
 async def feed(feed: str) -> JSONResponse:
     spec = FEEDS.get(feed)
@@ -259,6 +264,8 @@ async def feed(feed: str) -> JSONResponse:
         raise HTTPException(status_code=404, detail=f"feed '{feed}' is not migrated")
     store: FeedStore = app.state.store
     items = await store.items(feed)
+    if feed == "flights":
+        items = _airborne_flights(items)
     provenance = await store.get_provenance(feed)
     return JSONResponse(
         {

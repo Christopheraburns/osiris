@@ -170,30 +170,38 @@ def reshape_flight(rec: dict) -> dict:
 
     Mirrors the object returned per aircraft in src/app/api/flights/route.ts and
     nifi/scripts/flights-ingest.groovy. Fields:
-    {callsign, lat, lng, alt, heading, speed_knots, model, icao24, registration,
+    {callsign, lat, lng, alt, heading, speed_knots, model, id, icao24, registration,
      squawk, airline_code, aircraft_category, category, grounded, nac_p, type}.
     """
     entity = _unwrap_entity(rec)
     position = _as_dict(entity.get("position"))
     props = _as_dict(entity.get("properties"))
 
+    icao24 = _first(props.get("icao24"), entity.get("id"), "")
+    alt = _first(position.get("alt"), props.get("alt"))
+    grounded = props.get("grounded")
+    # Match /api/flights: baro alt below ~100 ft => on the ground.
+    if grounded is None and isinstance(alt, (int, float)):
+        grounded = alt < 30
+
     return {
+        "id": icao24,
         "callsign": _first(props.get("callsign"), entity.get("name")),
         "lat": _first(position.get("lat"), entity.get("lat")),
         "lng": _first(position.get("lng"), entity.get("lng")),
         # entity.position.alt is already meters (Groovy converts feet->m from
         # alt_baro); /api/flights returns rounded meters as "alt".
-        "alt": _first(position.get("alt"), props.get("alt")),
+        "alt": alt,
         "heading": props.get("heading"),
         "speed_knots": props.get("speed_knots"),
         "model": _first(props.get("model"), "Unknown"),
-        "icao24": _first(props.get("icao24"), entity.get("id"), ""),
+        "icao24": icao24,
         "registration": _first(props.get("registration"), "N/A"),
         "squawk": _first(props.get("squawk"), ""),
         "airline_code": _first(props.get("airline_code"), ""),
         "aircraft_category": _first(props.get("aircraft_category"), "plane"),
         "category": _first(props.get("category"), "commercial"),
-        "grounded": props.get("grounded"),
+        "grounded": grounded,
         "nac_p": props.get("nac_p"),
         "type": "flight",
     }

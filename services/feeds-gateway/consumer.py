@@ -188,6 +188,17 @@ def _feed_for(rec: dict) -> str | None:
     return None
 
 
+def _entity_id(feed: str, item: dict, counter: list[int]) -> str:
+    """Stable store key: id field, or icao24 for flights, else a one-off counter."""
+    if item.get("id"):
+        return str(item["id"])
+    if feed == "flights" and item.get("icao24"):
+        return str(item["icao24"])
+    cid = counter[0]
+    counter[0] += 1
+    return str(cid)
+
+
 async def _ingest_record(store: FeedStore, rec: dict, counter: list[int]) -> None:
     """Route one record to the right feed and store its reshaped item(s)."""
     # Case 1: canonical entity/envelope routed by entityType or source.
@@ -195,8 +206,7 @@ async def _ingest_record(store: FeedStore, rec: dict, counter: list[int]) -> Non
     if feed_name:
         spec = FEEDS[feed_name]
         item = spec.reshape(rec)
-        entity_id = str(item.get("id") or counter[0])
-        counter[0] += 1
+        entity_id = _entity_id(feed_name, item, counter)
         await store.put(feed_name, entity_id, item)
         await _record_provenance(store, feed_name, rec)
         return
@@ -210,8 +220,7 @@ async def _ingest_record(store: FeedStore, rec: dict, counter: list[int]) -> Non
                 if not isinstance(raw, dict):
                     continue
                 item = spec.reshape(raw)
-                entity_id = str(item.get("id") or counter[0])
-                counter[0] += 1
+                entity_id = _entity_id(fname, item, counter)
                 await store.put(fname, entity_id, item)
             await _record_provenance(store, fname, rec)
             return
