@@ -14,7 +14,6 @@ import ErrorBoundary from '@/components/ErrorBoundary';
 import SharePanel from '@/components/SharePanel';
 import ViewPresets from '@/components/ViewPresets';
 import KeyboardShortcuts from '@/components/KeyboardShortcuts';
-import GlobalStatusBar from '@/components/GlobalStatusBar';
 import LiveAlerts from '@/components/LiveAlerts';
 
 const OsirisMap = dynamic(() => import('@/components/OsirisMap'), { ssr: false });
@@ -146,6 +145,7 @@ export default function Dashboard() {
     jets: false,
     military: false,
     maritime: true,
+    vessels: true,
     satellites: false,
     sat_comms: false,
     sat_military: false,
@@ -337,7 +337,13 @@ export default function Dashboard() {
     // lakehouse data only. (Backend routes stay live so the recorder can still
     // persist every feed to the lake.)
     if (connModeRef.current.secured) {
-      const feed = url.split('?')[0].replace('/api/', '');
+      // Route path != feed name for maritime: the route is /api/maritime but the
+      // migrated feed is named "vessels". Without this alias the vessels layer is
+      // suppressed in secured mode and never paints, even though the gateway has
+      // vessels. Extend this map if any future route name diverges from its feed.
+      const ROUTE_TO_FEED: Record<string, string> = { maritime: 'vessels' };
+      const route = url.split('?')[0].replace('/api/', '');
+      const feed = ROUTE_TO_FEED[route] ?? route;
       if (!connModeRef.current.migrated.includes(feed)) return;
     }
     try {
@@ -447,7 +453,7 @@ export default function Dashboard() {
       layerFetchedRef.current.add('cctv');
     }
     // Maritime
-    if (activeLayers.maritime && !layerFetchedRef.current.has('maritime')) {
+    if ((activeLayers.maritime || activeLayers.vessels) && !layerFetchedRef.current.has('maritime')) {
       fetchEndpoint('/api/maritime', d => ({ maritime_ports: d.ports, maritime_chokepoints: d.chokepoints, maritime_ships: d.ships }));
       layerFetchedRef.current.add('maritime');
     }
@@ -482,9 +488,10 @@ export default function Dashboard() {
       layerFetchedRef.current.add('gdelt');
     }
 
-    // Submarine Cables (local static asset — suppressed in secured mode since it
-    // is not a NiFi-backed feed).
-    if (!connModeRef.current.secured && activeLayers.cables && !layerFetchedRef.current.has('cables')) {
+    // Submarine Cables (local static reference asset bundled in /public/data —
+    // no external egress, so it is air-gap-safe and MUST render in secured mode
+    // too, unlike public-API feeds. Do NOT gate this on connModeRef.secured.)
+    if (activeLayers.cables && !layerFetchedRef.current.has('cables')) {
       (async () => {
         try {
           const ts = Date.now();
@@ -522,7 +529,7 @@ export default function Dashboard() {
     if (activeLayers.radiation) {
       intervals.push(setInterval(() => fetchEndpoint('/api/radiation', d => ({ radiation: d.stations })), 300000)); // 5m
     }
-    if (activeLayers.maritime) {
+    if (activeLayers.maritime || activeLayers.vessels) {
       intervals.push(setInterval(() => fetchEndpoint('/api/maritime', d => ({ maritime_ports: d.ports, maritime_chokepoints: d.chokepoints, maritime_ships: d.ships })), 10000)); // 10s
     }
     return () => intervals.forEach(clearInterval);
@@ -1283,8 +1290,6 @@ export default function Dashboard() {
       {/* Keyboard Shortcuts Overlay */}
       <KeyboardShortcuts />
 
-      {/* ── GLOBAL STATUS TICKER (bottom) ── */}
-      <GlobalStatusBar />
 
       {/* Shortcut hint */}
       <div className="desktop-only absolute bottom-[26px] right-5 z-[200] pointer-events-none text-[6px] font-mono text-[var(--text-muted)]/40 tracking-widest">

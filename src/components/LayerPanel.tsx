@@ -34,7 +34,6 @@ const getLayerGroups = (theme: 'core' | 'ghost') => {
     fullLabel: 'OSIRIS SDK',
     color: '#1565C0',
     layers: [
-      { key: 'sdk_sea', label: 'Maritime Lines', icon: Anchor, color: '#4FC3F7', dataKey: 'sdk_entities' },
       { key: 'sdk_ransomware', label: 'Ransomware Feed', icon: AlertTriangle, color: '#D32F2F', dataKey: 'sdk_entities' },
     ],
   },
@@ -54,7 +53,9 @@ const getLayerGroups = (theme: 'core' | 'ghost') => {
     fullLabel: 'MARITIME',
     color: '#26C6DA',
     layers: [
-      { key: 'maritime', label: 'Maritime / Naval', icon: Ship, color: '#26C6DA', dataKey: 'maritime_ships,maritime_ports,maritime_chokepoints' },
+      { key: 'sdk_sea', label: 'Maritime Lines', icon: Share2, color: '#4FC3F7', dataKey: 'sdk_entities' },
+      { key: 'maritime', label: 'Maritime / Naval', icon: Anchor, color: '#26C6DA', dataKey: 'maritime_ports,maritime_chokepoints' },
+      { key: 'vessels', label: 'Vessels', icon: Ship, color: '#80DEEA', dataKey: 'maritime_ships' },
     ],
   },
   {
