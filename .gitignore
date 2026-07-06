@@ -60,3 +60,17 @@ scanner_backend_backup.js
 
 # Security - Prevent accidental manual leaks
 *Manual*.md
+.cache/
+.config/
+.local/
+.npm/
+.jupyter/
+.ipynb_checkpoints/
+.ssh/
+__pycache__/
+*.pyc
+.Rprofile
+.bash_history
+.python_history
+node_modules/
+.next/

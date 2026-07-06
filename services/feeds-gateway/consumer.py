@@ -15,6 +15,7 @@ import json
 import logging
 import os
 import time
+import ssl
 from typing import Any
 
 from aiokafka import AIOKafkaConsumer
@@ -25,13 +26,13 @@ from registry import ENTITY_TYPE_TO_FEED, FEEDS, RESPONSE_KEY_TO_FEED
 
 log = logging.getLogger("feeds-gateway.consumer")
 
-<<<<<<< HEAD
-KAFKA_BROKERS = os.environ.get("KAFKA_BROKERS", "kafka:9092")
-ENTITIES_TOPIC = os.environ.get("OSIRIS_ENTITIES_TOPIC", "osiris-entities")
-=======
-KAFKA_BROKERS = os.environ.get("KAFKA_BROKERS", "osiris-kafka:9092")
-ENTITIES_TOPIC = os.environ.get("OSIRIS_ENTITIES_TOPIC", "osiris.entities")
->>>>>>> b4f49591a98ab846cc834907bf81d466a22e02e3
+# Running local
+#KAFKA_BROKERS = os.environ.get("KAFKA_BROKERS", "osiris-kafka:9092")
+
+# Running on CAI
+KAFKA_BROKERS = "intelligence-service-kafka-corebroker0.se-sandb.a465-9q4k.cloudera.site:9093"
+
+ENTITIES_TOPIC = os.environ.get("OSIRIS_ENTITIES_TOPIC", "osiris-events")
 FEED_TTL_SECONDS = float(os.environ.get("FEED_TTL_SECONDS", "3600"))
 GROUP_ID = os.environ.get("KAFKA_GROUP_ID", "osiris-feeds-gateway")
 
@@ -205,8 +206,8 @@ async def consume_loop(store: FeedStore, stop: asyncio.Event) -> None:
             group_id=GROUP_ID,
             security_protocol="SASL_SSL",
             sasl_mechanism="PLAIN",
-            sasl_plain_username="cburns" #os.environ["KAFKA_USER"],      # workload username
-            sasl_plain_password="SuperSecret#1" #os.environ["KAFKA_PASSWORD"],  # workload password
+            sasl_plain_username="cburns", #os.environ["KAFKA_USER"],      # workload username
+            sasl_plain_password="SuperSecret#1", #os.environ["KAFKA_PASSWORD"],  # workload password
             ssl_context=ssl.create_default_context(),
             enable_auto_commit=True,
             auto_offset_reset="latest",

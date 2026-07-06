@@ -20,7 +20,7 @@ const app = express();
 const PORT = process.env.INTEL_PORT || 4000;
 
 // ════════════════════════════════════════════════════
-// §1 — CONFIGURATION
+// 1 — CONFIGURATION
 // ════════════════════════════════════════════════════
 
 const SDN_CSV_URL = 'https://data.opensanctions.org/datasets/latest/us_ofac_sdn/targets.simple.csv';
@@ -30,10 +30,15 @@ const SDN_REFRESH_MS = 24 * 60 * 60 * 1000; // 24h
 const WIKIDATA_CACHE_TTL = 24 * 60 * 60 * 1000; // 24h
 const WIKIDATA_CACHE_MAX = 10_000;
 
-const ALLOWED_DOMAINS = new Set(['query.wikidata.org', 'data.opensanctions.org', 'www.wikidata.org', 'ip-api.com', 'stat.ripe.net']);
+//const ALLOWED_DOMAINS = new Set(['query.wikidata.org', 'data.opensanctions.org', 'www.wikidata.org', 'ip-api.com', 'stat.ripe.net']);
+const ALLOWED_DOMAINS = new Set([
+  'query.wikidata.org', 'data.opensanctions.org', 'www.wikidata.org',
+  'ip-api.com', 'stat.ripe.net',
+  'graphdb.intsrv.se-sandb.a465-9q4k.cloudera.site',   // ← add (Memgraph shim)
+]);
 
 // ════════════════════════════════════════════════════
-// §2 — SANCTIONS INDEX (in-memory graph)
+// 2 — SANCTIONS INDEX (in-memory graph)
 // ════════════════════════════════════════════════════
 
 let sanctionsIndex = {
@@ -141,7 +146,7 @@ function sanctionsSearch(query, limit = 5) {
 }
 
 // ════════════════════════════════════════════════════
-// §3 — WIKIDATA LRU CACHE
+//  3 WIKIDATA LRU CACHE
 // ════════════════════════════════════════════════════
 
 const wdCache = new Map(); // key → { data, ts }
@@ -165,7 +170,7 @@ function wdCacheSet(key, data) {
 }
 
 // ════════════════════════════════════════════════════
-// §4 — WIKIDATA SPARQL (safe)
+// 4 — WIKIDATA SPARQL (safe)
 // ════════════════════════════════════════════════════
 
 function sanitizeId(id) {
@@ -185,6 +190,34 @@ async function sparql(query) {
   if (!res.ok) return [];
   const json = await res.json();
   return json.results?.bindings || [];
+}
+
+const MEMGRAPH_URL = process.env.MEMGRAPH_URL || '';
+
+// Query Memgraph via the /cypher HTTP shim. Returns array of row objects
+// (the shim replies {"rows":[ {...}, ... ]}). Mirrors sparql(): never throws
+// to the caller on a bad response — returns [] so resolvers degrade to
+// root + sanctions instead of failing.
+async function cypher(query, params = {}) {
+  if (!MEMGRAPH_URL) { console.warn('[INTEL] MEMGRAPH_URL not set'); return []; }
+  const parsed = new URL(MEMGRAPH_URL);
+  if (!ALLOWED_DOMAINS.has(parsed.hostname)) {
+    throw new Error(`Blocked domain: ${parsed.hostname}`);
+  }
+  try {
+    const res = await fetch(MEMGRAPH_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query, params }),
+      signal: AbortSignal.timeout(10000),
+    });
+    if (!res.ok) { console.warn('[INTEL] cypher HTTP', res.status); return []; }
+    const json = await res.json();
+    return json.rows || [];
+  } catch (e) {
+    console.warn('[INTEL] Memgraph error:', e.message);
+    return [];
+  }
 }
 
 // Search Wikidata for an entity by name, returns QID or null
@@ -336,7 +369,7 @@ async function resolveAircraft(id, properties = {}) {
   return result;
 }
 
-async function resolveVessel(id) {
+/*async function resolveVessel(id) {
   const rootId = `vessel:${id}`;
   const nodes = [], links = [];
   const cached = wdCacheGet(`vessel:${id}`);
@@ -376,6 +409,47 @@ async function resolveVessel(id) {
   addSanctionsToGraph(id, rootId, nodes, links);
   const result = dedup(nodes, links);
   wdCacheSet(`vessel:${id}`, result);
+  return result;
+}*/
+async function resolveVessel(id, secure = false) {
+  const rootId = `vessel:${id}`;
+  const nodes = [], links = [];
+  const cached = wdCacheGet(`vessel:${secure ? 's:' : ''}${id}`);  // separate cache key per mode
+  if (cached) return { ...cached };
+
+  if (secure) {
+    // Memgraph: vessel by IMO -> flag country + manufacturer
+    const rows = await cypher(
+      `MATCH (v:Vessel {imo: $id})
+       OPTIONAL MATCH (v)-[:COUNTRY]->(c:Country)
+       OPTIONAL MATCH (v)-[:MANUFACTURED_BY]->(m:Organization)
+       RETURN v.name AS name, c.name AS country, c.qid AS countryQid,
+              m.name AS maker, m.qid AS makerQid
+       LIMIT 10`,
+      { id }
+    );
+    for (const r of rows) {
+      if (r.country) {
+        const cid = `country:${r.country}`;
+        nodes.push({ id: cid, label: r.country, type: 'country', properties: { source: 'Memgraph', qid: r.countryQid } });
+        links.push({ source: rootId, target: cid, label: 'FLAG STATE' });
+      }
+      if (r.maker) {
+        const mid = `company:${r.maker}`;
+        nodes.push({ id: mid, label: r.maker, type: 'company', properties: { source: 'Memgraph', qid: r.makerQid } });
+        links.push({ source: rootId, target: mid, label: 'MANUFACTURED BY' });
+      }
+    }
+  } else {
+    try {
+      const results = await sparql(`...existing vessel SPARQL unchanged...`);
+      /* ...existing for-loop unchanged... */
+    } catch (e) { console.warn('[INTEL] Wikidata vessel error:', e.message); }
+  }
+
+  addSanctionsToGraph(id, rootId, nodes, links);   // BOTH modes, unchanged
+  const result = dedup(nodes, links);
+  wdCacheSet(`vessel:${secure ? 's:' : ''}${id}`, result);
   return result;
 }
 
@@ -423,7 +497,8 @@ async function resolveCompany(id) {
   const result = dedup(nodes, links);
   wdCacheSet(`company:${id}`, result);
   return result;
-}
+}*/
+
 
 async function resolvePerson(id) {
   const rootId = `person:${id}`;
@@ -683,11 +758,14 @@ async function resolveCountry(id) {
   return result;
 }
 
+const type   = (req.query.type || '').toLowerCase().trim();
+const rawId  = (req.query.id || '').trim();
+const secure = req.query.secure === '1' || req.query.secure === 'true';   // ← add
 const RESOLVERS = { aircraft: resolveAircraft, vessel: resolveVessel, company: resolveCompany, person: resolvePerson, ip: resolveIP, country: resolveCountry };
 const ALLOWED_TYPES = new Set(Object.keys(RESOLVERS));
 
 // ════════════════════════════════════════════════════
-// §6 — RATE LIMITER
+// 6 — RATE LIMITER
 // ════════════════════════════════════════════════════
 
 const rateMap = new Map();
@@ -702,8 +780,12 @@ function isRateLimited(ip, limit = 30, windowMs = 60000) {
 }
 
 // ════════════════════════════════════════════════════
-// §7 — EXPRESS ROUTES
+// 7 — EXPRESS ROUTES
 // ════════════════════════════════════════════════════
+
+app.get('/', (_req, res) => {
+  res.status(200).json({ service: 'osiris-intel', status: 'ok' });
+});
 
 app.get('/health', (_req, res) => {
   res.json({
@@ -714,6 +796,8 @@ app.get('/health', (_req, res) => {
     uptime_seconds: Math.floor(process.uptime()),
   });
 });
+
+
 
 app.get('/resolve', async (req, res) => {
   const ip = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.ip || 'unknown';
@@ -766,7 +850,7 @@ async function boot() {
   // Refresh sanctions every 24h
   setInterval(() => loadSanctions(), SDN_REFRESH_MS);
 
-  app.listen(PORT, '0.0.0.0', () => {
+  app.listen(PORT, '127.0.0.1', () => {
     console.log(`[INTEL] Intelligence Layer ready on port ${PORT}`);
     console.log(`[INTEL] Sanctions: ${sanctionsIndex.entries.length} entities indexed`);
     console.log(`[INTEL] Resolve endpoint: GET /resolve?type=<type>&id=<id>`);

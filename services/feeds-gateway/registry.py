@@ -16,7 +16,8 @@ from __future__ import annotations
 
 from typing import Callable
 
-from reshape import reshape_earthquake, reshape_fire, reshape_weather
+#from reshape import reshape_earthquake, reshape_fire, reshape_weather
+from reshape import reshape_earthquake, reshape_fire, reshape_weather, reshape_flight
 
 FeedReshaper = Callable[[dict], dict]
 
@@ -27,6 +28,7 @@ class FeedSpec:
         self.response_key = response_key
         self.entity_types = entity_types
         self.reshape = reshape
+
 
 
 FEEDS: dict[str, FeedSpec] = {
@@ -50,6 +52,12 @@ FEEDS: dict[str, FeedSpec] = {
         response_key="events",
         entity_types={"WEATHER"},
         reshape=reshape_weather,
+    ),
+    "flights": FeedSpec(
+        name="flights",
+        response_key="flights",          # /api/flights returns {"flights": [...]}
+        entity_types={"FLIGHT"},         # matches your NiFi script's entityType
+        reshape=reshape_flight,
     ),
 }
 
