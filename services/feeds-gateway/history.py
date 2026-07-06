@@ -266,3 +266,25 @@ def window(
             out = [e for e in _win_events if e["t"] is not None and lo <= e["t"] <= hi]
             return out[:limit]
     return _query_window(start_ms, end_ms, types, feeds, limit)
+
+
+def asset_track(asset_id: str, start_ms: int, end_ms: int, limit: int = 20000) -> list[dict]:
+    """Every position for ONE asset in [start, end], ordered by time.
+
+    The trajectory backbone for Pattern-of-Life — a small, targeted query on the
+    warm session (asset_id is highly selective).
+    """
+    aid = str(asset_id).replace("'", "").replace('"', "")
+    sql = (
+        f"SELECT lat, lon, event_time, source_feed, asset_type "
+        f"FROM {FQTN} "
+        f"WHERE asset_id = '{aid}' "
+        f"AND event_time BETWEEN '{_fmt_ts(int(start_ms))}' AND '{_fmt_ts(int(end_ms))}' "
+        f"AND lat IS NOT NULL AND lon IS NOT NULL "
+        f"ORDER BY event_time LIMIT {int(limit)}"
+    )
+    rows = _run(sql)
+    return [
+        {"lat": r[0], "lng": r[1], "t": _to_epoch_ms(r[2]), "source_feed": r[3], "asset_type": r[4]}
+        for r in rows
+    ]

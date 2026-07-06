@@ -25,6 +25,7 @@ import graph
 import history
 import intel
 import llm
+import patternoflife
 from consumer import FeedStore, consume_loop
 from registry import FEEDS, migrated_feeds
 
@@ -171,6 +172,27 @@ async def intel_ask(request: Request) -> StreamingResponse:
 
     return StreamingResponse(
         intel.ask_stream(entity, tier, question),
+        media_type="application/x-ndjson",
+        headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
+    )
+
+
+@app.post("/intel/pattern-of-life")
+async def intel_pattern_of_life(request: Request) -> StreamingResponse:
+    """Pattern-of-Life brief for a selected asset: graph context + lake trajectory
+    + derived movement features → grounded LLM narrative. Streams NDJSON.
+
+    Body: { entity: {type, callsign|icao24|registration|model | mmsi|imo|name}, window_hours? }
+    """
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail="invalid json")
+    entity = body.get("entity") or {}
+    if not isinstance(entity, dict):
+        raise HTTPException(status_code=400, detail="entity must be an object")
+    return StreamingResponse(
+        patternoflife.stream(entity, body.get("window_hours")),
         media_type="application/x-ndjson",
         headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
     )

@@ -81,6 +81,12 @@ function EntityGraphPanel({ entity, onClose }: Props) {
   const [intelError, setIntelError] = useState<string | null>(null);
   const [enrichNotice, setEnrichNotice] = useState<string | null>(null);
 
+  // ── Pattern of Life (graph context + lake trajectory → narrative) ──
+  const [polAnswer, setPolAnswer] = useState('');
+  const [polFacts, setPolFacts] = useState<IntelFact[]>([]);
+  const [polLoading, setPolLoading] = useState(false);
+  const [polError, setPolError] = useState<string | null>(null);
+
   const askIntel = useCallback(async (tier: number) => {
     if (!entity || entity.type !== 'aircraft' || intelLoading) return;
     setIntelTier(tier);
@@ -132,6 +138,62 @@ function EntityGraphPanel({ entity, onClose }: Props) {
       setIntelLoading(false);
     }
   }, [entity, intelLoading]);
+
+  const askPatternOfLife = useCallback(async () => {
+    if (!entity || polLoading) return;
+    if (entity.type !== 'aircraft' && entity.type !== 'vessel') return;
+    setPolLoading(true);
+    setPolAnswer('');
+    setPolFacts([]);
+    setPolError(null);
+    try {
+      const payload = {
+        entity: {
+          type: entity.type,
+          callsign: entity.type === 'aircraft' ? entity.id : undefined,
+          icao24: entity.properties?.icao24,
+          registration: entity.properties?.registration,
+          model: entity.properties?.model,
+          mmsi: entity.properties?.mmsi,
+          imo: entity.properties?.imo || (entity.type === 'vessel' ? entity.id : undefined),
+          name: entity.label,
+        },
+        window_hours: 6,
+      };
+      const res = await fetch('/api/intel/pattern-of-life', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      if (!res.ok || !res.body) {
+        const b = await res.json().catch(() => ({}));
+        throw new Error(b.error || `HTTP ${res.status}`);
+      }
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buf = '';
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        let idx;
+        while ((idx = buf.indexOf('\n')) >= 0) {
+          const line = buf.slice(0, idx).trim();
+          buf = buf.slice(idx + 1);
+          if (!line) continue;
+          try {
+            const evt = JSON.parse(line);
+            if (evt.type === 'facts') setPolFacts(evt.facts || []);
+            else if (evt.type === 'token') setPolAnswer((prev) => prev + evt.text);
+          } catch { /* ignore partial line */ }
+        }
+      }
+    } catch (e) {
+      setPolError(e instanceof Error ? e.message : 'pattern-of-life failed');
+    } finally {
+      setPolLoading(false);
+    }
+  }, [entity, polLoading]);
 
   const mergeGraph = useCallback((existing: GraphData, incoming: GraphData): GraphData => {
     const nodeMap = new Map<string, EntityNode>();
@@ -407,6 +469,44 @@ function EntityGraphPanel({ entity, onClose }: Props) {
                     <div key={i} className="text-[9px] font-mono text-white/60 truncate">
                       <span className="text-white/80">{f.predicate}</span>: {String(f.object)}{' '}
                       <span className="text-[var(--gold-primary)]/50">[{f.source}]</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* PATTERN OF LIFE (graph context + lake trajectory → narrative) — aircraft + vessels */}
+        {(entity?.type === 'aircraft' || entity?.type === 'vessel') && (
+          <div className="px-4 py-3 border-b border-[var(--border-primary)] bg-black/20 relative z-20">
+            <div className="flex items-center gap-2 mb-2">
+              <Sparkles className="w-3.5 h-3.5 text-[#FFB300]" />
+              <span className="text-[10px] font-mono font-bold tracking-[0.2em] text-[#FFB300]">PATTERN OF LIFE</span>
+              {polLoading && <Loader2 className="w-3 h-3 animate-spin text-[#FFB300]" />}
+            </div>
+            <button
+              disabled={polLoading}
+              onClick={askPatternOfLife}
+              title="Fuse graph context with the asset's lake trajectory into a brief"
+              className="px-2 py-1 text-[8px] font-mono tracking-widest border rounded transition-colors border-[#FFB300]/50 text-[#FFB300] hover:bg-[#FFB300]/10 disabled:opacity-40"
+            >
+              ▸ GENERATE BRIEF (6H)
+            </button>
+            {polError && (
+              <div className="text-[10px] font-mono font-bold text-[#FF1744] tracking-widest uppercase mt-1">[ ERR: {polError} ]</div>
+            )}
+            {(polAnswer || polLoading) && (
+              <div className="text-[11px] font-mono text-white/90 whitespace-pre-wrap leading-relaxed mt-2">{polAnswer || '…'}</div>
+            )}
+            {polFacts.length > 0 && (
+              <div className="mt-2 border-t border-white/5 pt-2">
+                <span className="text-[8px] font-mono text-[#FFB300]/70 tracking-widest uppercase">Fused facts (graph + lake)</span>
+                <div className="mt-1 space-y-0.5 max-h-32 overflow-y-auto">
+                  {polFacts.map((f, i) => (
+                    <div key={i} className="text-[9px] font-mono text-white/60 truncate">
+                      <span className="text-white/80">{f.predicate}</span>: {String(f.object)}{' '}
+                      <span className="text-[#FFB300]/50">[{f.source}]</span>
                     </div>
                   ))}
                 </div>
