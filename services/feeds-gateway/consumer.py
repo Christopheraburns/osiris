@@ -57,7 +57,35 @@ class FeedStore:
 
     async def put(self, feed: str, entity_id: str, item: dict) -> None:
         async with self._lock:
-            self._store.setdefault(feed, {})[entity_id] = (item, time.monotonic())
+            bucket = self._store.setdefault(feed, {})
+            if feed == "vessels" and entity_id in bucket:
+                item = self._merge_vessel(bucket[entity_id][0], item)
+            bucket[entity_id] = (item, time.monotonic())
+
+    @staticmethod
+    def _merge_vessel(prev: dict, new: dict) -> dict:
+        """Carry AIS ShipStaticData fields across frequent PositionReport overwrites.
+
+        Vessels are MMSI-keyed; PositionReports (position + speed, no IMO) arrive
+        far more often than ShipStaticData (name/destination/IMO ~every 6 min).
+        Without merging, the IMO graph-join key is lost seconds after it lands and
+        vessel Deep-Dive intel never resolves. The direct aisstream path
+        (src/app/api/maritime/route.ts) already merges per-MMSI; this brings the
+        streaming path to parity. New position/speed/heading always win; static
+        descriptors are only carried forward when the incoming record omits them.
+        """
+        merged = dict(new)
+        mmsi = str(new.get("mmsi") or "")
+        # IMO is the graph join key and only rides ShipStaticData — never drop it.
+        if merged.get("imo") is None and prev.get("imo") is not None:
+            merged["imo"] = prev["imo"]
+        # Destination only rides ShipStaticData; keep it across position updates.
+        if merged.get("destination") in (None, "") and prev.get("destination") not in (None, ""):
+            merged["destination"] = prev["destination"]
+        # Don't let a PositionReport's MMSI-fallback name clobber a real name.
+        if merged.get("name") in (None, "", mmsi) and prev.get("name") not in (None, "", mmsi):
+            merged["name"] = prev["name"]
+        return merged
 
     async def set_provenance(self, feed: str, prov: dict) -> None:
         async with self._lock:
