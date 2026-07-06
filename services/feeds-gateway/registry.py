@@ -17,7 +17,7 @@ from __future__ import annotations
 from typing import Callable
 
 #from reshape import reshape_earthquake, reshape_fire, reshape_weather
-from reshape import reshape_earthquake, reshape_fire, reshape_weather, reshape_flight
+from reshape import reshape_earthquake, reshape_fire, reshape_weather, reshape_flight, reshape_vessel
 
 FeedReshaper = Callable[[dict], dict]
 
@@ -58,6 +58,14 @@ FEEDS: dict[str, FeedSpec] = {
         response_key="flights",          # /api/flights returns {"flights": [...]}
         entity_types={"FLIGHT"},         # matches your NiFi script's entityType
         reshape=reshape_flight,
+    ),
+    # LIVE category — aisstream AIS vessels via NiFi (MMSI-keyed). response_key
+    # "vessels"; /api/maritime maps gw.vessels -> the `ships` array.
+    "vessels": FeedSpec(
+        name="vessels",
+        response_key="vessels",
+        entity_types={"VESSEL"},         # matches the vessels NiFi script's entityType
+        reshape=reshape_vessel,
     ),
 }
 

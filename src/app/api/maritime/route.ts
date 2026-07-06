@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import WebSocket from 'ws';
+import { shouldUseGateway, securedProxy } from '@/lib/connectionMode';
 
 /**
  * OSIRIS — Maritime Intelligence
@@ -216,6 +217,21 @@ async function fetchVesselApiFallback() {
 }
 
 export async function GET() {
+  // ── Secure Mode: pull vessels from the streaming lakehouse gateway ──
+  // The gateway serves { vessels: [...] } (MMSI-keyed ship items). We feed them
+  // through the same buildMaritimeResponse() the direct path uses, so the static
+  // ports/chokepoints (air-gap-safe) recompute against the streamed ships.
+  if (shouldUseGateway('vessels')) {
+    const gw = await securedProxy<{ vessels: any[] }>('/feeds/vessels', { vessels: [] });
+    const ships = gw.vessels ?? [];
+    return NextResponse.json(buildMaritimeResponse(ships), {
+      headers: {
+        'Cache-Control': 'no-store, no-cache, must-revalidate',
+        'Pragma': 'no-cache',
+      },
+    });
+  }
+
   // Trigger Hybrid Fallback
   await fetchVesselApiFallback();
 
@@ -228,7 +244,17 @@ export async function GET() {
   }
 
   const ships = Array.from(shipsCache.values());
+  return NextResponse.json(buildMaritimeResponse(ships), {
+    headers: {
+      'Cache-Control': 'no-store, no-cache, must-revalidate',
+      'Pragma': 'no-cache',
+    },
+  });
+}
 
+// Builds the maritime payload (dynamic ports/chokepoints + ships) from a ship
+// list. Shared by the direct aisstream path and the Secure-Mode gateway path.
+function buildMaritimeResponse(ships: any[]) {
   // Dynamically calculate live traffic (Fast approximation of Haversine)
   const getDistanceKm = (lat1: number, lng1: number, lat2: number, lng2: number) => {
     const dx = (lng1 - lng2) * Math.cos((lat1 + lat2) / 2 * Math.PI / 180);
@@ -290,18 +316,13 @@ export async function GET() {
     };
   });
 
-  return NextResponse.json({
+  return {
     ports: dynamicPorts,
     chokepoints: dynamicChokepoints,
-    ships: ships,
+    ships,
     total_ports: dynamicPorts.length,
     total_chokepoints: dynamicChokepoints.length,
     total_ships: ships.length,
     timestamp: new Date().toISOString(),
-  }, {
-    headers: { 
-      'Cache-Control': 'no-store, no-cache, must-revalidate',
-      'Pragma': 'no-cache'
-    },
-  });
+  };
 }

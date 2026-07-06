@@ -25,6 +25,7 @@ or an already feed-shaped item, pulling each field from whichever source exists.
 from __future__ import annotations
 
 import json
+import time
 from datetime import datetime
 from typing import Any
 
@@ -196,3 +197,46 @@ def reshape_flight(rec: dict) -> dict:
         "nac_p": props.get("nac_p"),
         "type": "flight",
     }
+
+
+def reshape_vessel(rec: dict) -> dict:
+    """Map a canonical VESSEL envelope/entity to the ``/api/maritime`` ship shape.
+
+    Mirrors the per-ship object in src/app/api/maritime/route.ts (the shipsCache
+    values returned under ``ships``) and nifi/scripts/vessels-ingest.groovy
+    (MMSI-keyed; IMO carried only when non-zero; PositionReport + ShipStaticData).
+    Fields the canvas reads: {id, mmsi, name, lat, lng, speed, heading,
+    destination, type, timestamp}. ``imo`` is passed through when present so
+    Secure-Mode intel can resolve the vessel to its Memgraph node by IMO.
+    """
+    entity = _unwrap_entity(rec)
+    position = _as_dict(entity.get("position"))
+    props = _as_dict(entity.get("properties"))
+
+    mmsi = _first(props.get("mmsi"), entity.get("id"))
+    # AIS frequently reports IMO 0 (absent) — treat that as no IMO.
+    imo = _first(props.get("imo"))
+    if imo in (0, "0", 0.0):
+        imo = None
+
+    item = {
+        "id": _first(mmsi, entity.get("id")),
+        "mmsi": mmsi,
+        "name": _first(entity.get("name"), props.get("name"), props.get("shipname")),
+        "lat": _first(position.get("lat"), entity.get("lat")),
+        "lng": _first(position.get("lng"), entity.get("lng")),
+        # aisstream Sog -> speed; TrueHeading falls back to Cog (route.ts parity).
+        "speed": _first(props.get("speed"), props.get("sog")),
+        "heading": _first(props.get("heading"), props.get("true_heading"), props.get("cog")),
+        "destination": _first(props.get("destination"), props.get("dest")),
+        # OSIRIS category (cargo/tanker/military); default matches route.ts.
+        "type": _first(props.get("type"), props.get("shiptype"), props.get("ship_type"), "cargo"),
+        # Frontend compares to Date.now() in ms; carry the real time or stamp now.
+        "timestamp": _first(
+            _epoch_ms(props.get("timestamp"), entity.get("timestamp")),
+            int(time.time() * 1000),
+        ),
+    }
+    if imo is not None:
+        item["imo"] = imo
+    return item
