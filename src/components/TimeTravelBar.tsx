@@ -23,11 +23,25 @@ interface Props {
 const SPEEDS = [10, 60, 300, 1200, 3600];
 const TRAIL_MS = 120_000; // show each asset's last position within a 2-min trail
 const TICK_MS = 100; // playback resolution (10 fps)
-const CHUNK_MS = 5 * 60_000; // history is loaded in 5-minute chunks, on demand
-const CHUNK_LIMIT = 20000; // safety cap per chunk
+const CHUNK_MS = 5 * 60_000; // scrubber requests history in 5-minute chunks
+const CHUNK_LIMIT = 20000;
+const DEFAULT_WINDOW_MS = 2 * 60 * 60_000; // gateway preloads a 2-hour working window
 
 const fmt = (ms: number) => new Date(ms).toISOString().replace('T', ' ').slice(0, 19) + ' UTC';
 const chunkKeyOf = (t: number) => Math.floor(t / CHUNK_MS) * CHUNK_MS;
+
+// datetime-local <-> epoch ms, interpreting the picker value as UTC (lake times are UTC).
+const toInput = (ms: number) => {
+  const d = new Date(ms);
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${d.getUTCFullYear()}-${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())}T${p(d.getUTCHours())}:${p(d.getUTCMinutes())}`;
+};
+const fromInput = (v: string): number | null => {
+  if (!v) return null;
+  const withSec = v.length === 16 ? `${v}:00` : v;
+  const ms = Date.parse(`${withSec}Z`);
+  return Number.isNaN(ms) ? null : ms;
+};
 
 export default function TimeTravelBar({ onFrame, onExit }: Props) {
   const [status, setStatus] = useState<'loading' | 'ready' | 'error'>('loading');
@@ -37,14 +51,22 @@ export default function TimeTravelBar({ onFrame, onExit }: Props) {
   const [speed, setSpeed] = useState(300);
   const [playhead, setPlayhead] = useState(0);
   const [buffering, setBuffering] = useState(false);
+  const [preparing, setPreparing] = useState(false);
+  const [loaded, setLoaded] = useState<{ start: number; end: number } | null>(null);
 
   const chunksRef = useRef<Map<number, HistEvent[]>>(new Map());
   const inFlightRef = useRef<Set<number>>(new Set());
+  const loadedRef = useRef<{ start: number; end: number } | null>(null);
   const playheadRef = useRef(0);
   const playingRef = useRef(false);
   const speedRef = useRef(300);
   playingRef.current = playing;
   speedRef.current = speed;
+
+  const inLoaded = (t: number) => {
+    const r = loadedRef.current;
+    return !!r && t >= r.start && t <= r.end;
+  };
 
   const eventsInRange = useCallback((from: number, to: number): HistEvent[] => {
     const out: HistEvent[] = [];
@@ -86,13 +108,10 @@ export default function TimeTravelBar({ onFrame, onExit }: Props) {
             .filter((e: HistEvent) => e.t != null)
             .sort((a: HistEvent, b: HistEvent) => a.t - b.t);
           chunksRef.current.set(key, evs);
-          // If the just-loaded chunk covers the current frame window, refresh the picture.
-          if (key <= playheadRef.current && key + CHUNK_MS >= playheadRef.current - TRAIL_MS) {
-            emitFrame(playheadRef.current);
-          }
+          if (key <= playheadRef.current && key + CHUNK_MS >= playheadRef.current - TRAIL_MS) emitFrame(playheadRef.current);
         }
       } catch {
-        /* leave unloaded; a later ensure() will retry this key */
+        /* leave unloaded; a later ensure() will retry */
       } finally {
         inFlightRef.current.delete(key);
         if (inFlightRef.current.size === 0) setBuffering(false);
@@ -103,9 +122,9 @@ export default function TimeTravelBar({ onFrame, onExit }: Props) {
 
   const ensureChunks = useCallback(
     (head: number, prefetch: boolean) => {
-      loadChunk(chunkKeyOf(head)); // current
-      loadChunk(chunkKeyOf(head - TRAIL_MS)); // trail may cross a boundary
-      if (prefetch) loadChunk(chunkKeyOf(head) + CHUNK_MS); // next, while playing
+      loadChunk(chunkKeyOf(head));
+      loadChunk(chunkKeyOf(head - TRAIL_MS));
+      if (prefetch) loadChunk(chunkKeyOf(head) + CHUNK_MS);
     },
     [loadChunk],
   );
@@ -120,7 +139,47 @@ export default function TimeTravelBar({ onFrame, onExit }: Props) {
     [ensureChunks, emitFrame],
   );
 
-  // Load the scrubber extent once (cached server-side; first call pays Tez cold-start).
+  // Ask the gateway to pull a window into memory; scrubbing within it is then instant.
+  const loadWindow = useCallback(
+    async (start: number, end: number) => {
+      setPreparing(true);
+      setPlaying(false);
+      try {
+        const params = new URLSearchParams({ start: String(Math.round(start)), end: String(Math.round(end)) });
+        const r = await fetch(`/api/timetravel/load?${params}`, { cache: 'no-store' });
+        const data = await r.json().catch(() => ({}));
+        if (r.ok) {
+          const range = { start: Math.round(start), end: Math.round(end) };
+          loadedRef.current = range;
+          setLoaded(range);
+          chunksRef.current.clear();
+          inFlightRef.current.clear();
+          ensureChunks(playheadRef.current, false);
+          emitFrame(playheadRef.current);
+          return true;
+        }
+        setErrorMsg(data.error || 'failed to load window');
+        return false;
+      } catch {
+        setErrorMsg('failed to load window');
+        return false;
+      } finally {
+        setPreparing(false);
+      }
+    },
+    [ensureChunks, emitFrame],
+  );
+
+  const loadAround = useCallback(
+    (t: number) => {
+      if (!bounds) return;
+      const half = DEFAULT_WINDOW_MS / 2;
+      loadWindow(Math.max(bounds.min, t - half), Math.min(bounds.max, t + half));
+    },
+    [bounds, loadWindow],
+  );
+
+  // Startup: get extent, preload the recent window, park the playhead at its start.
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -130,8 +189,12 @@ export default function TimeTravelBar({ onFrame, onExit }: Props) {
         if (!br.ok || b.min_time == null || b.max_time == null) throw new Error(b.error || 'no data in the lake yet');
         if (cancelled) return;
         setBounds({ min: b.min_time, max: b.max_time, count: b.count });
+        const winStart = Math.max(b.min_time, b.max_time - DEFAULT_WINDOW_MS);
         setStatus('ready');
-        setHead(b.min_time); // park at the start and load the first chunk
+        playheadRef.current = winStart;
+        setPlayhead(winStart);
+        await loadWindow(winStart, b.max_time); // preload recent window into gateway RAM
+        if (!cancelled) setHead(winStart);
       } catch (e) {
         if (cancelled) return;
         setErrorMsg(e instanceof Error ? e.message : 'failed to load history');
@@ -142,7 +205,7 @@ export default function TimeTravelBar({ onFrame, onExit }: Props) {
       cancelled = true;
       onFrame([]);
     };
-  }, [onFrame, setHead]);
+  }, [onFrame, setHead, loadWindow]);
 
   // Playback loop.
   useEffect(() => {
@@ -160,6 +223,7 @@ export default function TimeTravelBar({ onFrame, onExit }: Props) {
   }, [status, bounds, setHead]);
 
   const pct = bounds && bounds.max > bounds.min ? ((playhead - bounds.min) / (bounds.max - bounds.min)) * 100 : 0;
+  const outsideWindow = status === 'ready' && !!bounds && !inLoaded(playhead);
 
   return (
     <div className="desktop-only absolute bottom-0 left-0 right-0 z-[300] pointer-events-auto">
@@ -170,9 +234,10 @@ export default function TimeTravelBar({ onFrame, onExit }: Props) {
         <div className="flex items-center gap-3">
           <span className="text-[10px] font-mono font-bold tracking-widest text-[#00E5FF] whitespace-nowrap">⏱ TIME TRAVEL</span>
 
-          {status === 'loading' && (
+          {(status === 'loading' || preparing) && (
             <span className="flex items-center gap-2 text-[10px] font-mono text-white/60">
-              <span className="inline-block w-3 h-3 rounded-full border-2 border-[#00E5FF]/40 border-t-[#00E5FF] animate-spin" /> loading lake extent…
+              <span className="inline-block w-3 h-3 rounded-full border-2 border-[#00E5FF]/40 border-t-[#00E5FF] animate-spin" />
+              {status === 'loading' ? 'loading lake extent…' : 'loading window (one-time)…'}
             </span>
           )}
 
@@ -186,17 +251,11 @@ export default function TimeTravelBar({ onFrame, onExit }: Props) {
             <>
               <button
                 onClick={() => (playhead >= bounds.max ? setHead(bounds.min) : setPlaying((p) => !p))}
-                className="flex items-center justify-center w-8 h-8 rounded border border-[#00E5FF]/40 bg-[#00E5FF]/10 hover:bg-[#00E5FF]/20 transition-colors"
+                disabled={preparing}
+                className="flex items-center justify-center w-8 h-8 rounded border border-[#00E5FF]/40 bg-[#00E5FF]/10 hover:bg-[#00E5FF]/20 transition-colors disabled:opacity-40"
                 title={playing ? 'Pause' : 'Play'}
               >
                 {playing ? <Pause className="w-4 h-4 text-[#00E5FF]" /> : <Play className="w-4 h-4 text-[#00E5FF]" />}
-              </button>
-              <button
-                onClick={() => { setPlaying(false); setHead(bounds.min); }}
-                className="flex items-center justify-center w-8 h-8 rounded border border-white/15 bg-white/5 hover:bg-white/10 transition-colors text-white/70 text-xs font-mono"
-                title="Rewind to start"
-              >
-                ⏮
               </button>
 
               <input
@@ -212,9 +271,7 @@ export default function TimeTravelBar({ onFrame, onExit }: Props) {
 
               {buffering && <span className="inline-block w-2.5 h-2.5 rounded-full border-2 border-[#00E5FF]/40 border-t-[#00E5FF] animate-spin" title="loading chunk…" />}
 
-              <span className="text-[10px] font-mono text-white/80 tabular-nums whitespace-nowrap min-w-[190px] text-right">
-                {fmt(playhead)}
-              </span>
+              <span className="text-[10px] font-mono text-white/80 tabular-nums whitespace-nowrap min-w-[190px] text-right">{fmt(playhead)}</span>
 
               <select
                 value={speed}
@@ -222,9 +279,7 @@ export default function TimeTravelBar({ onFrame, onExit }: Props) {
                 className="text-[10px] font-mono bg-black/50 border border-white/15 rounded px-1.5 py-1 text-white/80"
                 title="Playback speed"
               >
-                {SPEEDS.map((s) => (
-                  <option key={s} value={s}>{s}×</option>
-                ))}
+                {SPEEDS.map((s) => (<option key={s} value={s}>{s}×</option>))}
               </select>
             </>
           )}
@@ -237,10 +292,45 @@ export default function TimeTravelBar({ onFrame, onExit }: Props) {
             <X className="w-4 h-4 text-white/70" />
           </button>
         </div>
+
+        {status === 'ready' && bounds && (
+          <div className="mt-2 flex items-center gap-2">
+            <span className="text-[9px] font-mono text-white/40 tracking-wider whitespace-nowrap">JUMP TO (UTC):</span>
+            <input
+              type="datetime-local"
+              step={1}
+              min={toInput(bounds.min)}
+              max={toInput(bounds.max)}
+              value={toInput(playhead)}
+              onChange={(e) => {
+                const ms = fromInput(e.target.value);
+                if (ms == null) return;
+                const clamped = Math.min(bounds.max, Math.max(bounds.min, ms));
+                setPlaying(false);
+                setHead(clamped);
+                if (!inLoaded(clamped)) loadAround(clamped); // deliberate jump outside the buffer → reload
+              }}
+              className="text-[10px] font-mono bg-black/50 border border-white/15 rounded px-2 py-1 text-white/85 [color-scheme:dark]"
+            />
+            {outsideWindow && !preparing && (
+              <button
+                onClick={() => loadAround(playhead)}
+                className="text-[9px] font-mono px-2 py-1 rounded border border-[#FFB300]/50 bg-[#FFB300]/10 text-[#FFCA28] hover:bg-[#FFB300]/20"
+                title="This time is outside the loaded window — load it (one Hive query)"
+              >
+                ⟳ LOAD THIS WINDOW
+              </button>
+            )}
+            <span className="text-[9px] font-mono text-white/30 whitespace-nowrap">picker jumps the playhead · then press play</span>
+          </div>
+        )}
+
         {status === 'ready' && bounds && (
           <div className="mt-1 flex justify-between text-[8px] font-mono text-white/35">
             <span>{fmt(bounds.min)}</span>
-            <span>{bounds.count.toLocaleString()} events · streaming 5-min chunks from lakehouse</span>
+            <span>
+              {bounds.count.toLocaleString()} events · loaded window {loaded ? `${fmt(loaded.start)} → ${fmt(loaded.end)}` : '—'}
+            </span>
             <span>{fmt(bounds.max)}</span>
           </div>
         )}

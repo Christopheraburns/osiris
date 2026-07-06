@@ -63,6 +63,7 @@ HIVE_DATABASE = os.environ.get("HIVE_DATABASE", "osiris")
 HIVE_TABLE = os.environ.get("HIVE_TABLE", "events_iceberg")
 HIVE_USE_SSL = os.environ.get("HIVE_USE_SSL", "true").lower() == "true"
 BOUNDS_TTL = float(os.environ.get("HISTORY_BOUNDS_TTL", "300"))
+PRELOAD_HOURS = float(os.environ.get("HISTORY_PRELOAD_HOURS", "3"))
 
 FQTN = f"{HIVE_DATABASE}.{HIVE_TABLE}"
 
@@ -72,6 +73,13 @@ _conn: Any = None
 _conn_lock = threading.Lock()
 _bounds_cache: Optional[dict] = None
 _bounds_ts = 0.0
+
+# In-memory replay buffer: one loaded time window served to the scrubber from RAM,
+# so per-chunk reads never round-trip to Hive.
+_win_lock = threading.Lock()
+_win_events: list = []
+_win_start = 0
+_win_end = 0
 
 
 def configured() -> bool:
@@ -163,12 +171,8 @@ def bounds(force: bool = False) -> dict:
     return _bounds_cache
 
 
-def window(start_ms: int, end_ms: int, types: Optional[list[str]] = None, limit: int = 20000) -> list[dict]:
-    """Positional events in [start, end], ordered by time — a single replay chunk.
-
-    Kept small by design: the UI requests short time windows around the playhead
-    and prefetches the next as it plays, so each query is cheap on the warm session.
-    """
+def _query_window(start_ms: int, end_ms: int, types: Optional[list[str]] = None, limit: int = 20000) -> list[dict]:
+    """Live Hive query for positional events in [start, end], ordered by time."""
     where = [
         f"event_time BETWEEN '{_fmt_ts(int(start_ms))}' AND '{_fmt_ts(int(end_ms))}'",
         "lat IS NOT NULL",
@@ -195,3 +199,47 @@ def window(start_ms: int, end_ms: int, types: Optional[list[str]] = None, limit:
         }
         for r in rows
     ]
+
+
+def load_window(start_ms: int, end_ms: int, types: Optional[list[str]] = None, limit: int = 500000) -> dict:
+    """Pull a whole time window into memory with ONE Hive query.
+
+    After this, the scrubber's per-chunk /history reads are filtered from RAM with
+    no Hive round-trip — so scrubbing/playback never pays Tez latency. Only this
+    single load does. The UI calls it once for the working window; the startup
+    warm-up primes the recent window so even the first click is instant.
+    """
+    global _win_events, _win_start, _win_end
+    evs = _query_window(start_ms, end_ms, types, limit)
+    with _win_lock:
+        _win_events = evs
+        _win_start = int(start_ms)
+        _win_end = int(end_ms)
+    log.info("history window loaded: %d events in [%s, %s]", len(evs), _fmt_ts(int(start_ms)), _fmt_ts(int(end_ms)))
+    return {"count": len(evs), "start": int(start_ms), "end": int(end_ms)}
+
+
+def preload_recent(hours: Optional[float] = None) -> dict:
+    """Load the most recent ``hours`` of the lake into the memory buffer."""
+    h = PRELOAD_HOURS if hours is None else hours
+    b = bounds()
+    if not b.get("max_time"):
+        return {"count": 0, "start": None, "end": None}
+    end = int(b["max_time"])
+    start = max(int(b.get("min_time") or 0), end - int(h * 3_600_000))
+    return load_window(start, end)
+
+
+def window(start_ms: int, end_ms: int, types: Optional[list[str]] = None, limit: int = 20000) -> list[dict]:
+    """Serve a replay chunk from the in-memory window if covered; else query Hive.
+
+    The UI preloads a working window via load_window; chunk reads inside it are
+    filtered from RAM (instant). A request outside the loaded window falls back to
+    a live Hive query (slow — not the interactive path).
+    """
+    lo, hi = int(start_ms), int(end_ms)
+    with _win_lock:
+        if _win_events and lo >= _win_start and hi <= _win_end:
+            out = [e for e in _win_events if e["t"] is not None and lo <= e["t"] <= hi]
+            return out[:limit]
+    return _query_window(start_ms, end_ms, types, limit)

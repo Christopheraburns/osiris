@@ -53,6 +53,8 @@ async def lifespan(app: FastAPI):
             try:
                 b = await asyncio.to_thread(history.bounds, True)
                 log.info("history warm-up ok: %s", b)
+                w = await asyncio.to_thread(history.preload_recent)
+                log.info("history recent window preloaded: %s", w)
             except Exception as exc:  # noqa: BLE001
                 log.warning("history warm-up failed (retries on first request): %s", exc)
         asyncio.create_task(_warm_history(), name="history-warmup")
@@ -185,6 +187,23 @@ async def history_bounds() -> JSONResponse:
         log.warning("history bounds failed: %s", exc)
         raise HTTPException(status_code=503, detail=f"history unavailable: {exc}")
     return JSONResponse({**data, "timestamp": _now_iso()})
+
+
+@app.get("/history/load")
+async def history_load(start: int, end: int, types: str = "") -> JSONResponse:
+    """Load a time window into the gateway's in-memory replay buffer (one Hive query).
+
+    Subsequent /history chunk reads inside [start, end] are served from RAM.
+    """
+    if not history.configured():
+        raise HTTPException(status_code=503, detail="history not configured (set HIVE_* env vars)")
+    tlist = [t for t in types.split(",") if t]
+    try:
+        res = await asyncio.to_thread(history.load_window, start, end, tlist or None)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("history load failed: %s", exc)
+        raise HTTPException(status_code=503, detail=f"history unavailable: {exc}")
+    return JSONResponse({**res, "timestamp": _now_iso()})
 
 
 @app.get("/history")
