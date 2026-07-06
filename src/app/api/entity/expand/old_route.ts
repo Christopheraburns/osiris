@@ -48,11 +48,6 @@ export async function GET(req: Request) {
       const val = searchParams.get(key);
       if (val) params.set(key, val);
     }
-    // Secure Mode: forward the flag so the intel brain enriches from Memgraph
-    // instead of public Wikidata. The caller (Intel panel) sets secure=1 when
-    // the Secure Mode button is ON; this proxy just passes it through.
-    const secure = searchParams.get('secure');
-    if (secure === '1' || secure === 'true') params.set('secure', '1');
     const res = await fetch(`${INTEL_URL}/resolve?${params}`, {
       signal: AbortSignal.timeout(15000),
       headers: { 'X-Forwarded-For': clientIp },

@@ -11,8 +11,6 @@ import {
 
 const ForceGraph2D = dynamic(() => import('react-force-graph-2d'), { ssr: false });
 
-import { isSecured } from '@/lib/connectionMode';
-
 // GraphRAG question tiers (Phase 1 wired; 2-5 are planned/disabled).
 const INTEL_TIERS = [
   { n: 1, label: 'ATTRIBUTION', hint: 'Operator, registration country, aircraft type' },
@@ -162,9 +160,6 @@ function EntityGraphPanel({ entity, onClose }: Props) {
       if (properties?.registration) params.set('registration', properties.registration);
       if (properties?.model) params.set('model', properties.model);
       if (properties?.icao24) params.set('icao24', properties.icao24);
-      // Secure Mode: tell the intel brain to enrich from Memgraph (air-gapped)
-      // instead of public Wikidata. Same source of truth as the feeds toggle.
-      if (isSecured()) params.set('secure', '1');
       const res = await fetch(`/api/entity/expand?${params}`, { cache: 'no-store' });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {

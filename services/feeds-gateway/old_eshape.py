@@ -162,37 +162,3 @@ def reshape_weather(rec: dict) -> dict:
         "source": _first(props.get("eventSrc"), src.get("sourceUrl")),
         "provider": _first(props.get("provider"), src.get("provider")),
     }
-
-
-def reshape_flight(rec: dict) -> dict:
-    """Map a canonical FLIGHT envelope/entity to the ``/api/flights`` item shape.
-
-    Mirrors the object returned per aircraft in src/app/api/flights/route.ts and
-    nifi/scripts/flights-ingest.groovy. Fields:
-    {callsign, lat, lng, alt, heading, speed_knots, model, icao24, registration,
-     squawk, airline_code, aircraft_category, category, grounded, nac_p, type}.
-    """
-    entity = _unwrap_entity(rec)
-    position = _as_dict(entity.get("position"))
-    props = _as_dict(entity.get("properties"))
-
-    return {
-        "callsign": _first(props.get("callsign"), entity.get("name")),
-        "lat": _first(position.get("lat"), entity.get("lat")),
-        "lng": _first(position.get("lng"), entity.get("lng")),
-        # entity.position.alt is already meters (Groovy converts feet->m from
-        # alt_baro); /api/flights returns rounded meters as "alt".
-        "alt": _first(position.get("alt"), props.get("alt")),
-        "heading": props.get("heading"),
-        "speed_knots": props.get("speed_knots"),
-        "model": _first(props.get("model"), "Unknown"),
-        "icao24": _first(props.get("icao24"), entity.get("id"), ""),
-        "registration": _first(props.get("registration"), "N/A"),
-        "squawk": _first(props.get("squawk"), ""),
-        "airline_code": _first(props.get("airline_code"), ""),
-        "aircraft_category": _first(props.get("aircraft_category"), "plane"),
-        "category": _first(props.get("category"), "commercial"),
-        "grounded": props.get("grounded"),
-        "nac_p": props.get("nac_p"),
-        "type": "flight",
-    }

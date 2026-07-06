@@ -1,6 +1,7 @@
 
 import { NextResponse } from 'next/server';
 import { stealthFetch } from '@/lib/stealthFetch';
+import { shouldUseGateway, securedProxy } from '@/lib/connectionMode';
 
 /**
  * OSIRIS — Flight Data API
@@ -141,6 +142,39 @@ const CACHE_TTL = 45000; // 45 seconds cache window
 let fetchPromise: Promise<any> | null = null;
 
 export async function GET() {
+  // ── Secure Mode: pull flights from the streaming lakehouse gateway ──
+  // The gateway serves a FLAT list { flights: [...] } (one item per aircraft,
+  // each carrying a `category`). The frontend expects CATEGORY BUCKETS, so we
+  // re-group the flat list into the same shape the direct path returns.
+  if (shouldUseGateway('flights')) {
+    const gw = await securedProxy<{ flights: any[] }>(
+      '/feeds/flights',
+      { flights: [] },
+    );
+    const flights = gw.flights ?? [];
+    const commercial: any[] = [];
+    const privateFl: any[] = [];
+    const jets: any[] = [];
+    const military: any[] = [];
+    for (const f of flights) {
+      switch (f.category) {
+        case 'military': military.push(f); break;
+        case 'jet': jets.push(f); break;
+        case 'private': privateFl.push(f); break;
+        default: commercial.push(f);
+      }
+    }
+    return NextResponse.json({
+      commercial_flights: commercial,
+      private_flights: privateFl,
+      private_jets: jets,
+      military_flights: military,
+      gps_jamming: [], // not computed on the gateway path
+      total: flights.length,
+      timestamp: new Date().toISOString(),
+    }, { headers: { 'Cache-Control': 'no-store' } });
+  }
+
   const now = Date.now();
 
   // Return cached data if within TTL

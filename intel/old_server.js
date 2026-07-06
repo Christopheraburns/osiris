@@ -30,13 +30,7 @@ const SDN_REFRESH_MS = 24 * 60 * 60 * 1000; // 24h
 const WIKIDATA_CACHE_TTL = 24 * 60 * 60 * 1000; // 24h
 const WIKIDATA_CACHE_MAX = 10_000;
 
-// Memgraph shim endpoint (Secure Mode). Set MEMGRAPH_URL on the Application, e.g.
-//   MEMGRAPH_URL=https://graphdb.<domain>/cypher   (no trailing slash)
-const MEMGRAPH_URL = process.env.MEMGRAPH_URL || '';
-const MEMGRAPH_HOST = MEMGRAPH_URL ? (() => { try { return new URL(MEMGRAPH_URL).hostname; } catch { return ''; } })() : '';
-
 const ALLOWED_DOMAINS = new Set(['query.wikidata.org', 'data.opensanctions.org', 'www.wikidata.org', 'ip-api.com', 'stat.ripe.net']);
-if (MEMGRAPH_HOST) ALLOWED_DOMAINS.add(MEMGRAPH_HOST);
 
 // ════════════════════════════════════════════════════
 // §2 — SANCTIONS INDEX (in-memory graph)
@@ -209,32 +203,6 @@ async function wdSearch(query, type = 'item') {
   } catch { return null; }
 }
 
-// Query Memgraph via the /cypher HTTP shim (Secure Mode). Returns array of row
-// objects (shim replies {"rows":[...]}). Like sparql(), never throws to the
-// caller on a bad response — returns [] so resolvers degrade to root + sanctions
-// instead of failing. This keeps enrichment air-gapped (no query.wikidata.org).
-async function cypher(query, params = {}) {
-  if (!MEMGRAPH_URL) { console.warn('[INTEL] MEMGRAPH_URL not set — Secure Mode has no graph'); return []; }
-  const parsed = new URL(MEMGRAPH_URL);
-  if (!ALLOWED_DOMAINS.has(parsed.hostname)) {
-    throw new Error(`Blocked domain: ${parsed.hostname}`);
-  }
-  try {
-    const res = await fetch(MEMGRAPH_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ query, params }),
-      signal: AbortSignal.timeout(10000),
-    });
-    if (!res.ok) { console.warn('[INTEL] cypher HTTP', res.status); return []; }
-    const json = await res.json();
-    return json.rows || [];
-  } catch (e) {
-    console.warn('[INTEL] Memgraph error:', e.message);
-    return [];
-  }
-}
-
 // ════════════════════════════════════════════════════
 // §5 — RESOLVERS (the intelligence)
 // ════════════════════════════════════════════════════
@@ -269,10 +237,10 @@ function dedup(nodes, links) {
   return { nodes: uNodes, links: uLinks };
 }
 
-async function resolveAircraft(id, properties = {}, secure = false) {
+async function resolveAircraft(id, properties = {}) {
   const rootId = `aircraft:${id}`;
   const nodes = [], links = [];
-  const cacheKey = `aircraft:${secure ? 's:' : ''}${id}:${properties.registration || ''}`;
+  const cacheKey = `aircraft:${id}:${properties.registration || ''}`;
   const cached = wdCacheGet(cacheKey);
   if (cached) return { ...cached };
 
@@ -286,77 +254,42 @@ async function resolveAircraft(id, properties = {}, secure = false) {
   let airlineName = null;
 
   if (airlinePrefix && airlinePrefix.length >= 2) {
-    if (secure) {
-      // Memgraph: airline by ICAO code (Organization.icao) → country + parent org.
-      // No CEO edge — people aren't in the graph (nohumans dataset).
-      try {
-        const rows = await cypher(
-          `MATCH (o:Organization {icao: $icao})
-           OPTIONAL MATCH (o)-[:COUNTRY]->(c:Country)
-           OPTIONAL MATCH (o)-[:SUBSIDIARY_OF]->(parent:Organization)
-           RETURN o.name AS airline, o.qid AS airlineQid,
-                  c.name AS country, c.qid AS countryQid,
-                  parent.name AS parent, parent.qid AS parentQid
-           LIMIT 5`,
-          { icao: airlinePrefix }
-        );
-        for (const r of rows) {
-          if (r.airline) {
-            airlineName = r.airline;
-            const airId = `company:${airlineName}`;
-            nodes.push({ id: airId, label: airlineName, type: 'company', properties: { icao_code: airlinePrefix, source: 'Memgraph', qid: r.airlineQid } });
-            links.push({ source: rootId, target: airId, label: 'OPERATED BY' });
-            if (r.country) {
-              const cid = `country:${r.country}`;
-              nodes.push({ id: cid, label: r.country, type: 'country', properties: { source: 'Memgraph', qid: r.countryQid } });
-              links.push({ source: airId, target: cid, label: 'HEADQUARTERED' });
-            }
-            if (r.parent) {
-              const pid = `company:${r.parent}`;
-              nodes.push({ id: pid, label: r.parent, type: 'company', properties: { source: 'Memgraph', qid: r.parentQid } });
-              links.push({ source: airId, target: pid, label: 'PARENT ORG' });
-            }
+    // Search Wikidata for the ICAO airline code
+    try {
+      const results = await sparql(`
+        SELECT ?item ?itemLabel ?countryLabel ?ceoLabel ?parentLabel WHERE {
+          ?item wdt:P230 "${airlinePrefix}" .
+          OPTIONAL { ?item wdt:P17 ?country . }
+          OPTIONAL { ?item wdt:P169 ?ceo . }
+          OPTIONAL { ?item wdt:P749 ?parent . }
+          SERVICE wikibase:label { bd:serviceParam wikibase:language "en" . }
+        } LIMIT 5`);
+
+      for (const r of results) {
+        if (r.itemLabel?.value) {
+          airlineName = r.itemLabel.value;
+          const airId = `company:${airlineName}`;
+          nodes.push({ id: airId, label: airlineName, type: 'company', properties: { icao_code: airlinePrefix, source: 'Wikidata' } });
+          links.push({ source: rootId, target: airId, label: 'OPERATED BY' });
+
+          if (r.countryLabel?.value) {
+            const cid = `country:${r.countryLabel.value}`;
+            nodes.push({ id: cid, label: r.countryLabel.value, type: 'country', properties: { source: 'Wikidata' } });
+            links.push({ source: airId, target: cid, label: 'HEADQUARTERED' });
+          }
+          if (r.ceoLabel?.value) {
+            const pid = `person:${r.ceoLabel.value}`;
+            nodes.push({ id: pid, label: r.ceoLabel.value, type: 'person', properties: { role: 'CEO', source: 'Wikidata' } });
+            links.push({ source: airId, target: pid, label: 'CEO' });
+          }
+          if (r.parentLabel?.value) {
+            const pid = `company:${r.parentLabel.value}`;
+            nodes.push({ id: pid, label: r.parentLabel.value, type: 'company', properties: { source: 'Wikidata' } });
+            links.push({ source: airId, target: pid, label: 'PARENT ORG' });
           }
         }
-      } catch (e) { console.warn('[INTEL] Memgraph airline lookup error:', e.message); }
-    } else {
-      // Search Wikidata for the ICAO airline code
-      try {
-        const results = await sparql(`
-          SELECT ?item ?itemLabel ?countryLabel ?ceoLabel ?parentLabel WHERE {
-            ?item wdt:P230 "${airlinePrefix}" .
-            OPTIONAL { ?item wdt:P17 ?country . }
-            OPTIONAL { ?item wdt:P169 ?ceo . }
-            OPTIONAL { ?item wdt:P749 ?parent . }
-            SERVICE wikibase:label { bd:serviceParam wikibase:language "en" . }
-          } LIMIT 5`);
-
-        for (const r of results) {
-          if (r.itemLabel?.value) {
-            airlineName = r.itemLabel.value;
-            const airId = `company:${airlineName}`;
-            nodes.push({ id: airId, label: airlineName, type: 'company', properties: { icao_code: airlinePrefix, source: 'Wikidata' } });
-            links.push({ source: rootId, target: airId, label: 'OPERATED BY' });
-
-            if (r.countryLabel?.value) {
-              const cid = `country:${r.countryLabel.value}`;
-              nodes.push({ id: cid, label: r.countryLabel.value, type: 'country', properties: { source: 'Wikidata' } });
-              links.push({ source: airId, target: cid, label: 'HEADQUARTERED' });
-            }
-            if (r.ceoLabel?.value) {
-              const pid = `person:${r.ceoLabel.value}`;
-              nodes.push({ id: pid, label: r.ceoLabel.value, type: 'person', properties: { role: 'CEO', source: 'Wikidata' } });
-              links.push({ source: airId, target: pid, label: 'CEO' });
-            }
-            if (r.parentLabel?.value) {
-              const pid = `company:${r.parentLabel.value}`;
-              nodes.push({ id: pid, label: r.parentLabel.value, type: 'company', properties: { source: 'Wikidata' } });
-              links.push({ source: airId, target: pid, label: 'PARENT ORG' });
-            }
-          }
-        }
-      } catch (e) { console.warn('[INTEL] Airline ICAO lookup error:', e.message); }
-    }
+      }
+    } catch (e) { console.warn('[INTEL] Airline ICAO lookup error:', e.message); }
   }
 
   // Step 2: Decode registration prefix → country (e.g. TC → Turkey, N → USA, G → UK)
@@ -403,170 +336,100 @@ async function resolveAircraft(id, properties = {}, secure = false) {
   return result;
 }
 
-async function resolveVessel(id, secure = false) {
+async function resolveVessel(id) {
   const rootId = `vessel:${id}`;
   const nodes = [], links = [];
-  const cacheKey = `vessel:${secure ? 's:' : ''}${id}`;
-  const cached = wdCacheGet(cacheKey);
+  const cached = wdCacheGet(`vessel:${id}`);
   if (cached) return { ...cached };
 
-  if (secure) {
-    // Memgraph: vessel by IMO → flag country + manufacturer. IMO exists on only
-    // ~1/3 of graph vessels; a miss yields no vessel node but root + sanctions
-    // still render (intended air-gap degradation).
-    try {
-      const rows = await cypher(
-        `MATCH (v:Vessel {imo: $id})
-         OPTIONAL MATCH (v)-[:COUNTRY]->(c:Country)
-         OPTIONAL MATCH (v)-[:MANUFACTURED_BY]->(m:Organization)
-         RETURN v.name AS name, c.name AS country, c.qid AS countryQid,
-                m.name AS maker, m.qid AS makerQid
-         LIMIT 10`,
-        { id }
-      );
-      for (const r of rows) {
-        if (r.country) {
-          const cid = `country:${r.country}`;
-          nodes.push({ id: cid, label: r.country, type: 'country', properties: { source: 'Memgraph', qid: r.countryQid } });
-          links.push({ source: rootId, target: cid, label: 'FLAG STATE' });
-        }
-        if (r.maker) {
-          const mid = `company:${r.maker}`;
-          nodes.push({ id: mid, label: r.maker, type: 'company', properties: { source: 'Memgraph', qid: r.makerQid } });
-          links.push({ source: rootId, target: mid, label: 'MANUFACTURED BY' });
-        }
+  try {
+    const results = await sparql(`
+      SELECT ?item ?itemLabel ?ownerLabel ?countryLabel ?operatorLabel ?flagLabel WHERE {
+        { ?item wdt:P458 "${id}" . }
+        UNION { ?item rdfs:label "${id}"@en . ?item wdt:P31/wdt:P279* wd:Q11446 . }
+        OPTIONAL { ?item wdt:P127 ?owner . }
+        OPTIONAL { ?item wdt:P17 ?country . }
+        OPTIONAL { ?item wdt:P137 ?operator . }
+        OPTIONAL { ?item wdt:P8047 ?flag . }
+        SERVICE wikibase:label { bd:serviceParam wikibase:language "en" . }
+      } LIMIT 10`);
+    for (const r of results) {
+      if (r.ownerLabel?.value) {
+        const oid = `company:${r.ownerLabel.value}`;
+        nodes.push({ id: oid, label: r.ownerLabel.value, type: 'company', properties: { source: 'Wikidata' } });
+        links.push({ source: rootId, target: oid, label: 'OWNED BY' });
       }
-    } catch (e) { console.warn('[INTEL] Memgraph vessel error:', e.message); }
-  } else {
-    try {
-      const results = await sparql(`
-        SELECT ?item ?itemLabel ?ownerLabel ?countryLabel ?operatorLabel ?flagLabel WHERE {
-          { ?item wdt:P458 "${id}" . }
-          UNION { ?item rdfs:label "${id}"@en . ?item wdt:P31/wdt:P279* wd:Q11446 . }
-          OPTIONAL { ?item wdt:P127 ?owner . }
-          OPTIONAL { ?item wdt:P17 ?country . }
-          OPTIONAL { ?item wdt:P137 ?operator . }
-          OPTIONAL { ?item wdt:P8047 ?flag . }
-          SERVICE wikibase:label { bd:serviceParam wikibase:language "en" . }
-        } LIMIT 10`);
-      for (const r of results) {
-        if (r.ownerLabel?.value) {
-          const oid = `company:${r.ownerLabel.value}`;
-          nodes.push({ id: oid, label: r.ownerLabel.value, type: 'company', properties: { source: 'Wikidata' } });
-          links.push({ source: rootId, target: oid, label: 'OWNED BY' });
-        }
-        const flag = r.flagLabel?.value || r.countryLabel?.value;
-        if (flag) {
-          const cid = `country:${flag}`;
-          nodes.push({ id: cid, label: flag, type: 'country', properties: { source: 'Wikidata' } });
-          links.push({ source: rootId, target: cid, label: 'FLAG STATE' });
-        }
-        if (r.operatorLabel?.value) {
-          const oid = `company:${r.operatorLabel.value}`;
-          nodes.push({ id: oid, label: r.operatorLabel.value, type: 'company', properties: { source: 'Wikidata' } });
-          links.push({ source: rootId, target: oid, label: 'OPERATED BY' });
-        }
+      const flag = r.flagLabel?.value || r.countryLabel?.value;
+      if (flag) {
+        const cid = `country:${flag}`;
+        nodes.push({ id: cid, label: flag, type: 'country', properties: { source: 'Wikidata' } });
+        links.push({ source: rootId, target: cid, label: 'FLAG STATE' });
       }
-    } catch (e) { console.warn('[INTEL] Wikidata vessel error:', e.message); }
-  }
+      if (r.operatorLabel?.value) {
+        const oid = `company:${r.operatorLabel.value}`;
+        nodes.push({ id: oid, label: r.operatorLabel.value, type: 'company', properties: { source: 'Wikidata' } });
+        links.push({ source: rootId, target: oid, label: 'OPERATED BY' });
+      }
+    }
+  } catch (e) { console.warn('[INTEL] Wikidata vessel error:', e.message); }
 
   addSanctionsToGraph(id, rootId, nodes, links);
   const result = dedup(nodes, links);
-  wdCacheSet(cacheKey, result);
+  wdCacheSet(`vessel:${id}`, result);
   return result;
 }
 
-async function resolveCompany(id, secure = false) {
+async function resolveCompany(id) {
   const rootId = `company:${id}`;
   const nodes = [], links = [];
-  const cacheKey = `company:${secure ? 's:' : ''}${id}`;
-  const cached = wdCacheGet(cacheKey);
+  const cached = wdCacheGet(`company:${id}`);
   if (cached) return { ...cached };
 
-  if (secure) {
-    // Memgraph: exact name match (indexed) → country + HQ place + parent org.
-    // No CEO edge — people aren't in the graph. Exact-match first; a miss yields
-    // root + sanctions only (intended air-gap degradation).
-    try {
-      const rows = await cypher(
-        `MATCH (o:Organization {name: $id})
-         OPTIONAL MATCH (o)-[:COUNTRY]->(c:Country)
-         OPTIONAL MATCH (o)-[:SUBSIDIARY_OF]->(parent:Organization)
-         RETURN c.name AS country, c.qid AS countryQid,
-                parent.name AS parent, parent.qid AS parentQid
-         LIMIT 10`,
-        { id }
-      );
-      for (const r of rows) {
-        if (r.country) {
-          const cid = `country:${r.country}`;
-          nodes.push({ id: cid, label: r.country, type: 'country', properties: { source: 'Memgraph', qid: r.countryQid } });
-          links.push({ source: rootId, target: cid, label: 'HEADQUARTERED' });
-        }
-        if (r.parent) {
-          const pid = `company:${r.parent}`;
-          nodes.push({ id: pid, label: r.parent, type: 'company', properties: { source: 'Memgraph', qid: r.parentQid } });
-          links.push({ source: rootId, target: pid, label: 'PARENT ORG' });
-        }
+  try {
+    // Use Wikidata search to find the QID first, then resolve by QID
+    const qid = await wdSearch(id);
+    const filter = qid
+      ? `VALUES ?item { wd:${qid} }`
+      : `?item rdfs:label "${id}"@en . { ?item wdt:P31/wdt:P279* wd:Q4830453 . } UNION { ?item wdt:P31/wdt:P279* wd:Q43229 . }`;
+    const results = await sparql(`
+      SELECT ?item ?itemLabel ?countryLabel ?parentLabel ?ceoLabel ?industryLabel WHERE {
+        ${filter}
+        OPTIONAL { ?item wdt:P17 ?country . }
+        OPTIONAL { ?item wdt:P749 ?parent . }
+        OPTIONAL { ?item wdt:P169 ?ceo . }
+        OPTIONAL { ?item wdt:P452 ?industry . }
+        SERVICE wikibase:label { bd:serviceParam wikibase:language "en" . }
+      } LIMIT 10`);
+    for (const r of results) {
+      if (r.countryLabel?.value) {
+        const cid = `country:${r.countryLabel.value}`;
+        nodes.push({ id: cid, label: r.countryLabel.value, type: 'country', properties: { source: 'Wikidata' } });
+        links.push({ source: rootId, target: cid, label: 'HEADQUARTERED' });
       }
-    } catch (e) { console.warn('[INTEL] Memgraph company error:', e.message); }
-  } else {
-    try {
-      // Use Wikidata search to find the QID first, then resolve by QID
-      const qid = await wdSearch(id);
-      const filter = qid
-        ? `VALUES ?item { wd:${qid} }`
-        : `?item rdfs:label "${id}"@en . { ?item wdt:P31/wdt:P279* wd:Q4830453 . } UNION { ?item wdt:P31/wdt:P279* wd:Q43229 . }`;
-      const results = await sparql(`
-        SELECT ?item ?itemLabel ?countryLabel ?parentLabel ?ceoLabel ?industryLabel WHERE {
-          ${filter}
-          OPTIONAL { ?item wdt:P17 ?country . }
-          OPTIONAL { ?item wdt:P749 ?parent . }
-          OPTIONAL { ?item wdt:P169 ?ceo . }
-          OPTIONAL { ?item wdt:P452 ?industry . }
-          SERVICE wikibase:label { bd:serviceParam wikibase:language "en" . }
-        } LIMIT 10`);
-      for (const r of results) {
-        if (r.countryLabel?.value) {
-          const cid = `country:${r.countryLabel.value}`;
-          nodes.push({ id: cid, label: r.countryLabel.value, type: 'country', properties: { source: 'Wikidata' } });
-          links.push({ source: rootId, target: cid, label: 'HEADQUARTERED' });
-        }
-        if (r.parentLabel?.value) {
-          const pid = `company:${r.parentLabel.value}`;
-          nodes.push({ id: pid, label: r.parentLabel.value, type: 'company', properties: { source: 'Wikidata' } });
-          links.push({ source: rootId, target: pid, label: 'PARENT ORG' });
-        }
-        if (r.ceoLabel?.value) {
-          const pid = `person:${r.ceoLabel.value}`;
-          nodes.push({ id: pid, label: r.ceoLabel.value, type: 'person', properties: { role: 'CEO', source: 'Wikidata' } });
-          links.push({ source: rootId, target: pid, label: 'CEO' });
-        }
+      if (r.parentLabel?.value) {
+        const pid = `company:${r.parentLabel.value}`;
+        nodes.push({ id: pid, label: r.parentLabel.value, type: 'company', properties: { source: 'Wikidata' } });
+        links.push({ source: rootId, target: pid, label: 'PARENT ORG' });
       }
-    } catch (e) { console.warn('[INTEL] Wikidata company error:', e.message); }
-  }
+      if (r.ceoLabel?.value) {
+        const pid = `person:${r.ceoLabel.value}`;
+        nodes.push({ id: pid, label: r.ceoLabel.value, type: 'person', properties: { role: 'CEO', source: 'Wikidata' } });
+        links.push({ source: rootId, target: pid, label: 'CEO' });
+      }
+    }
+  } catch (e) { console.warn('[INTEL] Wikidata company error:', e.message); }
 
   addSanctionsToGraph(id, rootId, nodes, links);
   const result = dedup(nodes, links);
-  wdCacheSet(cacheKey, result);
+  wdCacheSet(`company:${id}`, result);
   return result;
 }
 
-async function resolvePerson(id, secure = false) {
+async function resolvePerson(id) {
   const rootId = `person:${id}`;
   const nodes = [], links = [];
-  const cacheKey = `person:${secure ? 's:' : ''}${id}`;
-  const cached = wdCacheGet(cacheKey);
+  const cached = wdCacheGet(`person:${id}`);
   if (cached) return { ...cached };
-
-  // Secure Mode: the graph is the nohumans dataset — there is no person node to
-  // match. Return root + sanctions only (skip the Wikidata block entirely).
-  if (secure) {
-    addSanctionsToGraph(id, rootId, nodes, links);
-    const result = dedup(nodes, links);
-    wdCacheSet(cacheKey, result);
-    return result;
-  }
 
   try {
     const qid = await wdSearch(id);
@@ -602,7 +465,7 @@ async function resolvePerson(id, secure = false) {
 
   addSanctionsToGraph(id, rootId, nodes, links);
   const result = dedup(nodes, links);
-  wdCacheSet(cacheKey, result);
+  wdCacheSet(`person:${id}`, result);
   return result;
 }
 
@@ -842,10 +705,6 @@ function isRateLimited(ip, limit = 30, windowMs = 60000) {
 // §7 — EXPRESS ROUTES
 // ════════════════════════════════════════════════════
 
-app.get('/', (_req, res) => {
-  res.status(200).json({ service: 'osiris-intel', status: 'ok' });
-});
-
 app.get('/health', (_req, res) => {
   res.json({
     status: 'ok',
@@ -873,20 +732,14 @@ app.get('/resolve', async (req, res) => {
   const id = sanitizeId(rawId);
   if (id.length < 2) return res.status(400).json({ error: 'ID contains too many invalid characters' });
 
-  // Secure Mode flag (set by OSIRIS when the Secure Mode button is ON): enrich
-  // from Memgraph instead of public Wikidata. Sanctions run in both modes.
-  const secure = req.query.secure === '1' || req.query.secure === 'true';
-
   try {
+    const resolver = RESOLVERS[type];
     // Pass extra properties for aircraft resolution (registration, model, etc.)
     const props = {};
     if (req.query.registration) props.registration = sanitizeId(req.query.registration);
     if (req.query.model) props.model = sanitizeId(req.query.model);
     if (req.query.icao24) props.icao24 = sanitizeId(req.query.icao24);
-    // Aircraft takes (id, props, secure); the others take (id, secure).
-    const result = type === 'aircraft'
-      ? await resolveAircraft(id, props, secure)
-      : await RESOLVERS[type](id, secure);
+    const result = await resolver(id, props);
     res.set('Cache-Control', 'public, s-maxage=3600, stale-while-revalidate=7200');
     res.json({
       nodes: result.nodes,
@@ -913,7 +766,7 @@ async function boot() {
   // Refresh sanctions every 24h
   setInterval(() => loadSanctions(), SDN_REFRESH_MS);
 
-  app.listen(PORT, '127.0.0.1', () => {
+  app.listen(PORT, '0.0.0.0', () => {
     console.log(`[INTEL] Intelligence Layer ready on port ${PORT}`);
     console.log(`[INTEL] Sanctions: ${sanctionsIndex.entries.length} entities indexed`);
     console.log(`[INTEL] Resolve endpoint: GET /resolve?type=<type>&id=<id>`);
