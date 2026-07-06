@@ -181,7 +181,10 @@ function OsirisMap({ data, activeLayers, onEntityClick, onMouseCoords, onRightCl
       createIcon(map, 'plane-green', flightPriv, 24);   
       createIcon(map, 'plane-pink', flightGov, 24);    
       createIcon(map, 'plane-red', flightMil, 24);     
-      createIcon(map, 'plane-grey', isGhost ? phantomPurple : '#546E7A', 24);    
+      createIcon(map, 'plane-grey', isGhost ? phantomPurple : '#546E7A', 24);
+      // Aircraft carrying an ICAO airline designator (airline_code) are graph-enrichable
+      // — render them in a distinct royal blue (theme-independent marker).
+      createIcon(map, 'plane-enrich', '#448AFF', 24);
       createDot(map, 'dot-gold', isGhost ? phantomPurple : '#D4AF37', 8);
       createDot(map, 'dot-red', isGhost ? phantomPurple : '#D32F2F', 10);
       createDot(map, 'dot-orange', isGhost ? phantomPurple : '#E65100', 10);
@@ -474,8 +477,13 @@ function OsirisMap({ data, activeLayers, onEntityClick, onMouseCoords, onRightCl
         { id: 'fl-military', src: 'military', icon: 'plane-red' },
       ];
       flightLayers.forEach(l => {
+        // Aircraft with an ICAO airline designator (airline_code) are graph-enrichable →
+        // distinct royal-blue plane. Military keeps its threat-red icon.
+        const iconImage: any = l.id === 'fl-military'
+          ? l.icon
+          : ['case', ['==', ['get', 'has_airline'], true], 'plane-enrich', l.icon];
         map.addLayer({ id: l.id, type: 'symbol', source: l.src, layout: {
-          'icon-image': l.icon, 'icon-size': ['interpolate',['linear'],['zoom'], 1,0.4, 5,0.7, 10,1],
+          'icon-image': iconImage, 'icon-size': ['interpolate',['linear'],['zoom'], 1,0.4, 5,0.7, 10,1],
           'icon-rotate': ['get','heading'], 'icon-rotation-alignment': 'map', 'icon-allow-overlap': true, 'icon-ignore-placement': true,
         }, paint: { 'icon-opacity': 0.85 }});
       });
@@ -561,13 +569,25 @@ function OsirisMap({ data, activeLayers, onEntityClick, onMouseCoords, onRightCl
       // Maritime Ships (moving entities) — ocean teal family
       map.addLayer({ id: 'ship-dots', type: 'circle', source: 'maritime-ships', paint: {
         'circle-radius': ['interpolate',['linear'],['zoom'], 1,2, 5,4, 10,6],
-        'circle-color': ['match', ['get','type'], 'military','#D32F2F', 'tanker','#E65100', 'cargo','#26C6DA', '#B0BEC5'],
+        // IMO-bearing vessels (graph-enrichable) get a distinct royal blue so they
+        // stand out at a glance; military/tanker keep their threat colors.
+        'circle-color': ['case',
+          ['==', ['get','type'], 'military'], '#D32F2F',
+          ['==', ['get','type'], 'tanker'], '#E65100',
+          ['==', ['get','has_imo'], true], '#448AFF',
+          ['==', ['get','type'], 'cargo'], '#26C6DA',
+          '#B0BEC5'],
         'circle-opacity': 0.75,
       }});
       map.addLayer({ id: 'ship-label', type: 'symbol', source: 'maritime-ships', minzoom: 5, layout: {
         'text-field': ['get','name'], 'text-size': 9, 'text-font': ['Open Sans Regular'],
         'text-offset': [0, 1.2], 'text-allow-overlap': false,
-      }, paint: { 'text-color': ['match', ['get','type'], 'military','#D32F2F', 'tanker','#E65100', 'cargo','#26C6DA', '#B0BEC5'], 'text-halo-color': '#000', 'text-halo-width': 1 }});
+      }, paint: { 'text-color': ['case',
+          ['==', ['get','type'], 'military'], '#D32F2F',
+          ['==', ['get','type'], 'tanker'], '#E65100',
+          ['==', ['get','has_imo'], true], '#448AFF',
+          ['==', ['get','type'], 'cargo'], '#26C6DA',
+          '#B0BEC5'], 'text-halo-color': '#000', 'text-halo-width': 1 }});
 
       setMapReady(true);
     });
@@ -1069,7 +1089,7 @@ function OsirisMap({ data, activeLayers, onEntityClick, onMouseCoords, onRightCl
       }
       return filtered.map((f: any) => ({
         type: 'Feature' as const, geometry: { type: 'Point' as const, coordinates: [f.lng, f.lat] },
-        properties: { callsign: f.callsign, heading: f.heading || 0, alt: f.alt, model: f.model, speed_knots: f.speed_knots, registration: f.registration, icao24: f.icao24 },
+        properties: { callsign: f.callsign, heading: f.heading || 0, alt: f.alt, model: f.model, speed_knots: f.speed_knots, registration: f.registration, icao24: f.icao24, airline_code: f.airline_code || '', has_airline: !!(f.airline_code && String(f.airline_code).trim().length >= 2) },
       }));
     };
     setGeo('flights', activeLayers.flights ? toFeatures(data.commercial_flights, 10) : []);
@@ -1222,7 +1242,7 @@ function OsirisMap({ data, activeLayers, onEntityClick, onMouseCoords, onRightCl
     if (!mapReady) return;
     setGeo('maritime', activeLayers.maritime && data.maritime_ports ? data.maritime_ports.map((p: any) => ({ type: 'Feature', geometry: { type: 'Point', coordinates: [p.lng, p.lat] }, properties: { name: p.name, country: p.country, type: p.type, volume: p.volume, fleet: p.fleet, rank: p.rank } })) : []);
     setGeo('maritime-choke', activeLayers.maritime && data.maritime_chokepoints ? data.maritime_chokepoints.map((c: any) => ({ type: 'Feature', geometry: { type: 'Point', coordinates: [c.lng, c.lat] }, properties: { name: c.name, traffic: c.traffic, risk: c.risk } })) : []);
-    setGeo('maritime-ships', activeLayers.vessels && data.maritime_ships ? data.maritime_ships.map((s: any) => ({ type: 'Feature', geometry: { type: 'Point', coordinates: [s.lng, s.lat] }, properties: { id: s.id ?? s.mmsi, mmsi: s.mmsi, imo: s.imo, name: s.name || s.mmsi?.toString(), type: s.type || 'cargo', speed: s.speed, heading: s.heading, destination: s.destination, flag: s.flag } })) : []);
+    setGeo('maritime-ships', activeLayers.vessels && data.maritime_ships ? data.maritime_ships.map((s: any) => ({ type: 'Feature', geometry: { type: 'Point', coordinates: [s.lng, s.lat] }, properties: { id: s.id ?? s.mmsi, mmsi: s.mmsi, imo: s.imo, has_imo: !!s.imo, name: s.name || s.mmsi?.toString(), type: s.type || 'cargo', speed: s.speed, heading: s.heading, destination: s.destination, flag: s.flag } })) : []);
   }, [mapReady, data.maritime_ports, data.maritime_chokepoints, data.maritime_ships, activeLayers.maritime, activeLayers.vessels, setGeo]);
 
   useEffect(() => {
