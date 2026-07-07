@@ -28,7 +28,9 @@ from reg_prefixes import country_from_registration
 
 log = logging.getLogger("feeds-gateway.intel")
 
-INTEL_RESOLVER_URL = os.environ.get("INTEL_RESOLVER_URL", "http://osiris-intel:4000")
+INTEL_RESOLVER_URL = (
+    os.environ.get("INTEL_RESOLVER_URL") or os.environ.get("INTEL_URL") or "http://osiris-intel:4000"
+)
 
 TIER_QUESTIONS = {
     1: "Who operates this aircraft, what country is it registered in, and what type is it?",

@@ -28,7 +28,11 @@ import llm
 
 log = logging.getLogger("feeds-gateway.patternoflife")
 
-INTEL_RESOLVER_URL = os.environ.get("INTEL_RESOLVER_URL", "http://osiris-intel:4000")
+# Accept either name — the UI sets INTEL_URL; keep INTEL_RESOLVER_URL as an alias so
+# the gateway resolves through the same osiris-intel endpoint the graph panel uses.
+INTEL_RESOLVER_URL = (
+    os.environ.get("INTEL_RESOLVER_URL") or os.environ.get("INTEL_URL") or "http://osiris-intel:4000"
+)
 DEFAULT_WINDOW_HOURS = float(os.environ.get("POL_WINDOW_HOURS", "6"))
 
 SYSTEM_PROMPT = (

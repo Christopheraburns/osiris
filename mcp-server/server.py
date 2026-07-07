@@ -20,6 +20,7 @@ Application health check. Agent Studio connects to  https://<app-url>/mcp
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 from typing import Optional
@@ -258,6 +259,121 @@ async def pattern_of_life(
                 elif evt.get("type") == "token":
                     narrative += evt.get("text", "")
     return {"entity": entity, "facts": facts, "narrative": narrative}
+
+
+# ── Situational-awareness triage ──────────────────────────────────────────────
+
+_CHOKEPOINTS = [
+    ("Strait of Hormuz", 26.57, 56.25), ("Strait of Malacca", 2.5, 101.5),
+    ("Suez Canal", 30.43, 32.34), ("Bab el-Mandeb", 12.58, 43.33),
+    ("Panama Canal", 9.08, -79.68), ("Turkish Straits", 41.12, 29.07),
+    ("Taiwan Strait", 24.0, 119.0), ("Strait of Gibraltar", 35.97, -5.5),
+]
+_EMERGENCY = {"7500": "hijack", "7600": "radio failure", "7700": "general emergency"}
+
+
+def _haversine_km(a_lat: float, a_lng: float, b_lat: float, b_lng: float) -> float:
+    r = 6371.0
+    p1, p2 = math.radians(a_lat), math.radians(b_lat)
+    dphi = math.radians(b_lat - a_lat)
+    dl = math.radians(b_lng - a_lng)
+    x = math.sin(dphi / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
+    return 2 * r * math.asin(min(1.0, math.sqrt(x)))
+
+
+def _safe_float(v) -> float:
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return 99.0
+
+
+@mcp.tool()
+async def assets_of_interest(
+    max_results: int = 8, near_chokepoints: bool = True,
+    check_sanctions: bool = False, sanction_scan_limit: int = 6,
+) -> dict:
+    """Triage the CURRENT live picture and return a small, ranked list of the tracks
+    that warrant an operator's attention — so you don't have to reason over thousands
+    of raw tracks. Flags:
+      * aircraft squawking an emergency code (7500 hijack / 7600 radio-fail / 7700);
+      * military aircraft;
+      * vessels loitering on, or transiting, a strategic maritime chokepoint.
+    With check_sanctions=true, the top candidates are resolved against the knowledge
+    graph and any tied to a sanctioned owner/operator are promoted.
+
+    Returns { scanned: {flights, vessels}, items: [ {kind, id, label, reason,
+    priority, lat, lng, icao24|mmsi|imo} ] } — lower priority number = more urgent.
+    Use this to focus, then drill in with resolve_entity or pattern_of_life.
+    """
+    async with httpx.AsyncClient(timeout=20) as c:
+        try:
+            fr = await c.get(f"{FEEDS_GATEWAY_URL}/feeds/flights")
+            flights = fr.json().get("flights", []) if fr.status_code == 200 else []
+        except Exception:  # noqa: BLE001
+            flights = []
+        try:
+            vr = await c.get(f"{FEEDS_GATEWAY_URL}/feeds/vessels")
+            vessels = vr.json().get("vessels", []) if vr.status_code == 200 else []
+        except Exception:  # noqa: BLE001
+            vessels = []
+
+    items: list[dict] = []
+
+    for f in flights:
+        sq = str(f.get("squawk") or "")
+        ident = f.get("callsign") or f.get("icao24")
+        if not ident:
+            continue
+        if sq in _EMERGENCY:
+            items.append({"kind": "aircraft", "id": ident, "icao24": f.get("icao24"), "label": ident,
+                          "reason": f"emergency squawk {sq} ({_EMERGENCY[sq]})", "priority": 1,
+                          "lat": f.get("lat"), "lng": f.get("lng")})
+        elif str(f.get("category") or f.get("aircraft_category") or "").lower() in ("military", "mil"):
+            items.append({"kind": "aircraft", "id": ident, "icao24": f.get("icao24"), "label": ident,
+                          "reason": "military aircraft", "priority": 4,
+                          "lat": f.get("lat"), "lng": f.get("lng")})
+
+    if near_chokepoints:
+        for v in vessels:
+            lat, lng = v.get("lat"), v.get("lng")
+            if lat is None or lng is None:
+                continue
+            name, clat, clng = min(_CHOKEPOINTS, key=lambda c: _haversine_km(lat, lng, c[1], c[2]))
+            d = _haversine_km(lat, lng, clat, clng)
+            if d <= 100:
+                spd = v.get("speed")
+                loiter = spd is not None and _safe_float(spd) < 1.0
+                items.append({"kind": "vessel", "id": v.get("mmsi"), "mmsi": v.get("mmsi"), "imo": v.get("imo"),
+                              "label": v.get("name") or v.get("mmsi"),
+                              "reason": (f"loitering near {name} (~{int(d)} km)" if loiter
+                                         else f"transiting {name} (~{int(d)} km)"),
+                              "priority": 2 if loiter else 3, "lat": lat, "lng": lng})
+
+    items.sort(key=lambda x: x["priority"])
+    items = items[: max(max_results * 2, max_results)]
+
+    if check_sanctions and items:
+        async with httpx.AsyncClient(timeout=20) as c:
+            for it in items[:sanction_scan_limit]:
+                if it["kind"] == "aircraft":
+                    rtype, rid = "aircraft", it.get("id")
+                else:
+                    rtype, rid = "vessel", (it.get("imo") or it.get("mmsi"))
+                if not rid:
+                    continue
+                try:
+                    r = await c.get(f"{INTEL_URL}/resolve", params={"type": rtype, "id": str(rid), "secure": "1"})
+                    if r.status_code == 200:
+                        links = r.json().get("links", [])
+                        if any("sanction" in (l.get("label") or "").lower() for l in links):
+                            it["reason"] = "SANCTIONED owner/operator — " + it["reason"]
+                            it["priority"] = 0
+                except Exception:  # noqa: BLE001
+                    pass
+        items.sort(key=lambda x: x["priority"])
+
+    return {"scanned": {"flights": len(flights), "vessels": len(vessels)}, "items": items[:max_results]}
 
 
 # ── ASGI app: streamable-HTTP (/mcp) + a GET / health route for CAI ───────────
