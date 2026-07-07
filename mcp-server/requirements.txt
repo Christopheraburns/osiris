@@ -1,0 +1,5 @@
+# OSIRIS MCP server — pinned for reproducible CAI Application builds.
+mcp>=1.9.0
+httpx==0.28.1
+uvicorn[standard]==0.34.0
+starlette>=0.37.0
