@@ -18,7 +18,7 @@ Output:
 
 Run on the Spark 3 Data Hub, e.g.:
     spark-submit \
-      --packages graphframes:graphframes:0.8.3-spark3.5-s_2.12 \
+      --packages graphframes:graphframes:0.8.4-spark3.5-s_2.12 \
       --conf spark.sql.catalog.spark_catalog=org.apache.iceberg.spark.SparkSessionCatalog \
       --conf spark.sql.catalog.spark_catalog.type=hive \
       graph_analytics_job.py

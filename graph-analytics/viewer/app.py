@@ -19,7 +19,9 @@ Env:
 """
 from __future__ import annotations
 
+import asyncio
 import os
+import threading
 
 import httpx
 import uvicorn
@@ -174,5 +176,17 @@ loadCentral();loadClusters();
 </script></body></html>"""
 
 
-if __name__ == "__main__":
-    uvicorn.run(app, host="127.0.0.1", port=PORT)
+# The CAI PBJ kernel already owns an asyncio loop, so a top-level uvicorn.run()
+# (which calls asyncio.run) fails with "cannot be called from a running event loop".
+# Run uvicorn in a worker thread with its own loop — same pattern as the gateway/MCP
+# launchers. join() keeps the process alive so CAI sees a running Application.
+def _serve() -> None:
+    config = uvicorn.Config(app, host="127.0.0.1", port=PORT, log_level="info")
+    server = uvicorn.Server(config)
+    server.install_signal_handlers = lambda: None  # not the main thread
+    asyncio.run(server.serve())
+
+
+_server_thread = threading.Thread(target=_serve, name="graph-viewer-uvicorn", daemon=False)
+_server_thread.start()
+_server_thread.join()

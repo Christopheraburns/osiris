@@ -102,6 +102,9 @@ export default function Dashboard() {
   // authoritative mode is known (a ref alone doesn't trigger the effect).
   const [securedMode, setSecuredMode] = useState(false);
   const [reloadKey, setReloadKey] = useState(0);
+  // UI build revision — bumped on every change so you can confirm you're running the
+  // latest deployed build (shown top-right in the status bar).
+  const OSIRIS_REV = 1;
 
   const [backendStatus, setBackendStatus] = useState<'connecting' | 'connected' | 'error'>('connecting');
   const [mapView, setMapView] = useState({ zoom: 2.5, latitude: 20 });
@@ -922,6 +925,8 @@ export default function Dashboard() {
         </span>
 
         <span className="flex items-center gap-1">SYS: <span className={backendStatus === 'connected' ? 'text-[var(--alert-green)]' : 'text-[var(--alert-red)]'}>{backendStatus.toUpperCase()}</span></span>
+
+        <span className="flex items-center gap-1">REV: <span className="text-[var(--gold-primary)] font-bold">{OSIRIS_REV}</span></span>
 
         {spaceWeather && <span className="hidden lg:inline">SOLAR: <span style={{ color: spaceWeather.storm_color, fontWeight: 700 }}>Kp{spaceWeather.kp_index}</span></span>}
 
