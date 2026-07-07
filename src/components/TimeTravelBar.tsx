@@ -21,11 +21,12 @@ interface Props {
 
 const SPEEDS = [1, 10, 60, 300, 1200];
 // How close to the playhead a report must be to count as "present at this moment".
-// This is the snapshot tolerance: the frame shows each asset's latest report within
-// [T - TRAIL_MS, T]. Keep it just above the feed's sample interval — too large and
-// stale/departed aircraft linger (over-count); too small and aircraft flicker
-// between samples. 45s hugs the moment while tolerating normal sampling gaps.
-const TRAIL_MS = 45_000;
+// The frame shows each asset's latest report within [T - TRAIL_MS, T]. This MUST be
+// >= the lake's per-asset sample interval or assets vanish between samples (an empty
+// static frame). The OSIRIS flight feed lands in the lake roughly every ~2 min, so
+// anything below that empties the picture — 120s is the safe floor. The "too many"
+// count is driven by scope (the lake holds the full firehose), not this window.
+const TRAIL_MS = 120_000;
 const TICK_MS = 100;
 const CHUNK_MS = 5 * 60_000;
 const CHUNK_LIMIT = 20000;

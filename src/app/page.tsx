@@ -98,6 +98,9 @@ export default function Dashboard() {
   // feeds. connModeRef holds the authoritative server state; reloadKey forces the
   // data loaders to re-run when the mode flips.
   const connModeRef = useRef<{ secured: boolean; migrated: string[] }>({ secured: false, migrated: ['earthquakes'] });
+  // Reactive mirror of connModeRef.secured so the layer loaders re-run once the
+  // authoritative mode is known (a ref alone doesn't trigger the effect).
+  const [securedMode, setSecuredMode] = useState(false);
   const [reloadKey, setReloadKey] = useState(0);
 
   const [backendStatus, setBackendStatus] = useState<'connecting' | 'connected' | 'error'>('connecting');
@@ -335,8 +338,11 @@ export default function Dashboard() {
   }, []);
 
   // ── SHARED FETCH UTILITY (Fixes #107 — single definition, not 3 copies) ──
-  const fetchEndpoint = useCallback(async (url: string, transform?: (d: any) => any, options?: RequestInit) => {
-    if (typeof document !== 'undefined' && document.hidden) return;
+  // Returns true only if a fetch was actually performed and succeeded; false if it
+  // was suppressed (secured gate / tab hidden) or errored. Callers use this to avoid
+  // permanently marking a layer "loaded" when nothing was actually fetched.
+  const fetchEndpoint = useCallback(async (url: string, transform?: (d: any) => any, options?: RequestInit): Promise<boolean> => {
+    if (typeof document !== 'undefined' && document.hidden) return false;
     // SECURED CONNECTION: in secured mode, only fetch migrated (NiFi-backed)
     // feeds. All other public-API feeds are suppressed so the UI uses streaming
     // lakehouse data only. (Backend routes stay live so the recorder can still
@@ -349,7 +355,7 @@ export default function Dashboard() {
       const ROUTE_TO_FEED: Record<string, string> = { maritime: 'vessels' };
       const route = url.split('?')[0].replace('/api/', '');
       const feed = ROUTE_TO_FEED[route] ?? route;
-      if (!connModeRef.current.migrated.includes(feed)) return;
+      if (!connModeRef.current.migrated.includes(feed)) return false;
     }
     try {
       // Force the browser to bypass its local disk cache for real-time data
@@ -360,10 +366,13 @@ export default function Dashboard() {
         dataRef.current = { ...dataRef.current, ...d };
         setDataVersion(v => v + 1);
         setBackendStatus('connected');
+        return true;
       }
+      return false;
     } catch (e) {
       console.warn('[OSIRIS] Suppressed error:', e instanceof Error ? e.message : e);
       setBackendStatus('error');
+      return false;
     }
   }, []);
 
@@ -414,6 +423,7 @@ export default function Dashboard() {
         };
         if (next.secured !== connModeRef.current.secured) changed = true;
         connModeRef.current = next;
+        setSecuredMode(next.secured);  // drive the reactive dep so loaders re-run
       } catch { /* keep last known mode */ }
       if (changed) {
         dataRef.current = {};
@@ -434,12 +444,20 @@ export default function Dashboard() {
   const layerFetchedRef = useRef<Set<string>>(new Set());
   useEffect(() => {
 
+    // A layer is only marked "loaded" once a fetch actually succeeds. A fetch that
+    // was suppressed (connection mode not settled yet) or errored is NOT stranded —
+    // it clears the flag so the next effect run (e.g. when securedMode resolves)
+    // retries it. This is what makes "Secure ON → then select aviation" populate
+    // without the Secure OFF/ON toggle workaround.
+    const loadOnce = (key: string, run: () => Promise<boolean>) => {
+      if (layerFetchedRef.current.has(key)) return;
+      layerFetchedRef.current.add(key);
+      run().then(ok => { if (!ok) layerFetchedRef.current.delete(key); });
+    };
+
     // Flights
     if (activeLayers.flights || activeLayers.military || activeLayers.jets || activeLayers.private) {
-      if (!layerFetchedRef.current.has('flights')) {
-        fetchEndpoint('/api/flights');
-        layerFetchedRef.current.add('flights');
-      }
+      loadOnce('flights', () => fetchEndpoint('/api/flights'));
     }
     // Satellites (any satellite sub-layer triggers fetch)
     const anySatLayer = activeLayers.satellites || activeLayers.sat_comms || activeLayers.sat_military || activeLayers.sat_navigation || activeLayers.sat_earth || activeLayers.sat_science;
@@ -458,9 +476,8 @@ export default function Dashboard() {
       layerFetchedRef.current.add('cctv');
     }
     // Maritime
-    if ((activeLayers.maritime || activeLayers.vessels) && !layerFetchedRef.current.has('maritime')) {
-      fetchEndpoint('/api/maritime', d => ({ maritime_ports: d.ports, maritime_chokepoints: d.chokepoints, maritime_ships: d.ships }));
-      layerFetchedRef.current.add('maritime');
+    if (activeLayers.maritime || activeLayers.vessels) {
+      loadOnce('maritime', () => fetchEndpoint('/api/maritime', d => ({ maritime_ports: d.ports, maritime_chokepoints: d.chokepoints, maritime_ships: d.ships })));
     }
     // Balloons
     if (activeLayers.balloons && !layerFetchedRef.current.has('balloons')) {
@@ -519,13 +536,15 @@ export default function Dashboard() {
     }
 
 
-  }, [activeLayers, reloadKey]);
+  }, [activeLayers, reloadKey, securedMode]);
 
   // ── LAYER-AWARE POLLING — only poll data for active layers ──
   useEffect(() => {
     const intervals: ReturnType<typeof setInterval>[] = [];
     if (activeLayers.flights || activeLayers.military || activeLayers.jets || activeLayers.private) {
-      intervals.push(setInterval(() => fetchEndpoint('/api/flights'), 300000)); // 5 min (was 2 min)
+      // 30s: also acts as the safety net if the very first fetch landed before the
+      // gateway's flight feed had filled (secured mode), so aircraft appear promptly.
+      intervals.push(setInterval(() => fetchEndpoint('/api/flights'), 30000));
     }
 
     if (activeLayers.balloons) {
@@ -538,7 +557,7 @@ export default function Dashboard() {
       intervals.push(setInterval(() => fetchEndpoint('/api/maritime', d => ({ maritime_ports: d.ports, maritime_chokepoints: d.chokepoints, maritime_ships: d.ships })), 10000)); // 10s
     }
     return () => intervals.forEach(clearInterval);
-  }, [activeLayers, fetchEndpoint, reloadKey]);
+  }, [activeLayers, fetchEndpoint, reloadKey, securedMode]);
 
   // CCTV: loaded once on layer toggle via layerFetchedRef (no viewport polling)
 
