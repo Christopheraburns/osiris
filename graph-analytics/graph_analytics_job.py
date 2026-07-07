@@ -79,7 +79,6 @@ def main() -> int:
     pr = g.pageRank(resetProbability=0.15, maxIter=PR_MAX_ITER).vertices.select(
         "id", F.col("pagerank")
     )
-    cc = g.connectedComponents().select("id", F.col("component").cast("string"))
     lpa = g.labelPropagation(maxIter=LPA_MAX_ITER).select(
         "id", F.col("label").alias("community").cast("string")
     )
@@ -88,19 +87,29 @@ def main() -> int:
     metrics = (
         vertices.alias("v")
         .join(pr, "id", "left")
-        .join(cc, "id", "left")
         .join(lpa, "id", "left")
         .join(deg, "id", "left")
-        .select(
-            F.col("id").alias("node_id"),
-            F.col("v.label").alias("label"),
-            F.col("v.name").alias("name"),
-            F.coalesce(F.col("pagerank"), F.lit(0.0)).alias("pagerank"),
-            F.col("component"),
-            F.col("community"),
-            F.coalesce(F.col("degree"), F.lit(0)).alias("degree"),
-            F.current_timestamp().alias("computed_at"),
-        )
+    )
+
+    # connectedComponents is UNBOUNDED (iterates to convergence) and checkpoints to
+    # S3 every step — on a small cluster it dominates runtime (an hour+). It's off by
+    # default; set RUN_CONNECTED_COMPONENTS=true to include it. When off, 'component'
+    # is null and PageRank + communities + degree still land.
+    if os.environ.get("RUN_CONNECTED_COMPONENTS", "false").lower() == "true":
+        cc = g.connectedComponents().select("id", F.col("component").cast("string"))
+        metrics = metrics.join(cc, "id", "left")
+    else:
+        metrics = metrics.withColumn("component", F.lit(None).cast("string"))
+
+    metrics = metrics.select(
+        F.col("id").alias("node_id"),
+        F.col("v.label").alias("label"),
+        F.col("v.name").alias("name"),
+        F.coalesce(F.col("pagerank"), F.lit(0.0)).alias("pagerank"),
+        F.col("component"),
+        F.col("community"),
+        F.coalesce(F.col("degree"), F.lit(0)).alias("degree"),
+        F.current_timestamp().alias("computed_at"),
     )
     metrics.cache()
     print(f"[graph] metrics rows: {metrics.count():,}", flush=True)
