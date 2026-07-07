@@ -306,19 +306,21 @@ function EntityGraphPanel({ entity, onClose }: Props) {
       ctx.strokeStyle = `${color}30`; ctx.lineWidth = 1; ctx.stroke();
     }
 
-    // Clean label rendering
-    const fontSize = Math.max(10 / globalScale, 3);
-    if (fontSize > 3.5 || isSelected) {
-      ctx.font = `${isSelected ? 'bold ' : ''}${fontSize}px 'JetBrains Mono', monospace`;
-      ctx.fillStyle = isSelected ? '#fff' : `${color}cc`;
-      ctx.textAlign = 'center'; ctx.textBaseline = 'top';
-      // Black background for text readability
+    // Label — constant ~11px on screen at ANY zoom (font scales inversely with the
+    // canvas transform). Kept when zoomed in; hidden only when zoomed very far out to
+    // avoid clutter. Previously a font-size floor + `> 3.5` gate hid labels on zoom-in.
+    const fontSize = 11 / globalScale;
+    if (globalScale >= 0.35 || isSelected) {
       const label = n.label.length > 22 ? n.label.slice(0, 20) + '…' : n.label;
+      ctx.font = `${isSelected ? 'bold ' : ''}${fontSize}px 'JetBrains Mono', monospace`;
+      ctx.textAlign = 'center'; ctx.textBaseline = 'top';
       const textWidth = ctx.measureText(label).width;
+      const pad = 2 / globalScale;
+      const gap = 4 / globalScale;
       ctx.fillStyle = 'rgba(0,0,0,0.6)';
-      ctx.fillRect(n.x! - textWidth/2 - 2, n.y! + size + 3, textWidth + 4, fontSize + 2);
+      ctx.fillRect(n.x! - textWidth / 2 - pad, n.y! + size + gap - pad, textWidth + pad * 2, fontSize + pad * 2);
       ctx.fillStyle = isSelected ? '#fff' : color;
-      ctx.fillText(label, n.x!, n.y! + size + 4);
+      ctx.fillText(label, n.x!, n.y! + size + gap);
     }
   }, [selectedNode]);
 
@@ -331,8 +333,8 @@ function EntityGraphPanel({ entity, onClose }: Props) {
     ctx.lineWidth = Math.max(0.5, 1 / globalScale); 
     ctx.stroke();
     
-    const fs = Math.max(8 / globalScale, 2);
-    if (fs > 3) {
+    const fs = 9 / globalScale;   // constant ~9px on screen; kept when zoomed in
+    if (globalScale >= 0.5) {
       ctx.font = `${fs}px 'JetBrains Mono', monospace`; 
       ctx.fillStyle = 'rgba(212,175,55,0.4)';
       ctx.textAlign = 'center'; ctx.fillText(link.label || '', (s.x + t.x) / 2, (s.y + t.y) / 2);
