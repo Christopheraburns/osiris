@@ -24,7 +24,7 @@ interface OsirisMapProps {
   demoMode?: boolean;
   theme?: 'core' | 'ghost';
   timeTravelActive?: boolean;
-  timeTravelFrame?: { asset_id: string; asset_type: string; lat: number; lng: number; t: number }[];
+  timeTravelFrame?: { asset_id: string; asset_type: string; lat: number; lng: number; t: number; name?: string }[];
 }
 
 function computeSolarTerminator(): [number, number][] {
@@ -682,14 +682,15 @@ function OsirisMap({ data, activeLayers, onEntityClick, onMouseCoords, onRightCl
     // ── TimeTravel replay entities (historical) — same select→deep-dive as live ──
     const ttPopup = (coords: any, p: any) => {
       const id = idSafe(String(p.asset_id || ''));
+      const nm = idSafe(String(p.name || p.asset_id || ''));
       const isSea = String(p.kind || '') === 'vessel';
       const intel = isSea
-        ? `window.openOsirisIntel({ type: 'vessel', mmsi: '${id}' })`
-        : `window.openOsirisIntel({ callsign: '${id}', icao24: '${id}' })`;
+        ? `window.openOsirisIntel({ type: 'vessel', mmsi: '${id}', name: '${nm}' })`
+        : `window.openOsirisIntel({ callsign: '${nm}', icao24: '${id}' })`;
       const glyph = isSea ? '🚢' : '✈';
       popup(coords, `<div style="${pStyle}border:1px solid rgba(255,202,40,0.4);">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
-          <span style="color:#FFCA28;font-size:14px;font-weight:700;letter-spacing:0.1em;">${glyph} ${htmlEsc(String(p.asset_id || ''))}</span>
+          <span style="color:#FFCA28;font-size:14px;font-weight:700;letter-spacing:0.1em;">${glyph} ${htmlEsc(String(p.name || p.asset_id || ''))}</span>
           <span style="color:#5C5A54;font-size:9px;">HISTORICAL</span>
         </div>
         <div style="font-size:10px;margin-bottom:8px;"><span style="color:#5C5A54;">TYPE</span> <span style="color:#E8E6E0;">${htmlEsc(String(p.asset_type || (isSea ? 'vessel' : 'aircraft')))}</span> · <span style="color:#E8E6E0;">${coords[1].toFixed(2)},${coords[0].toFixed(2)}</span></div>
@@ -1310,7 +1311,7 @@ function OsirisMap({ data, activeLayers, onEntityClick, onMouseCoords, onRightCl
         : (at.includes('FLIGHT') || at.includes('AIR') || at.includes('COMMERCIAL') || at.includes('MILITARY') || at.includes('JET') || at.includes('PRIVATE')) ? 'AIR'
         : 'OTHER';
       const kind = domain === 'SEA' ? 'vessel' : domain === 'AIR' ? 'aircraft' : 'other';
-      return { type: 'Feature' as const, geometry: { type: 'Point' as const, coordinates: [e.lng, e.lat] }, properties: { domain, kind, asset_id: e.asset_id, asset_type: e.asset_type, label: e.asset_id } };
+      return { type: 'Feature' as const, geometry: { type: 'Point' as const, coordinates: [e.lng, e.lat] }, properties: { domain, kind, asset_id: e.asset_id, asset_type: e.asset_type, name: e.name || '', label: e.name || e.asset_id } };
     }));
     // While replaying, suppress the live moving layers so the historical picture is unambiguous;
     // when TimeTravel is off, restore them from activeLayers.

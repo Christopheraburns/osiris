@@ -11,6 +11,7 @@ export interface HistEvent {
   lng: number;
   t: number; // epoch ms (event_time)
   source_feed?: string;
+  name?: string; // display label (callsign / vessel name) from the lake payload
 }
 
 interface Props {
@@ -19,7 +20,12 @@ interface Props {
 }
 
 const SPEEDS = [1, 10, 60, 300, 1200];
-const TRAIL_MS = 120_000;
+// How close to the playhead a report must be to count as "present at this moment".
+// This is the snapshot tolerance: the frame shows each asset's latest report within
+// [T - TRAIL_MS, T]. Keep it just above the feed's sample interval — too large and
+// stale/departed aircraft linger (over-count); too small and aircraft flicker
+// between samples. 45s hugs the moment while tolerating normal sampling gaps.
+const TRAIL_MS = 45_000;
 const TICK_MS = 100;
 const CHUNK_MS = 5 * 60_000;
 const CHUNK_LIMIT = 20000;

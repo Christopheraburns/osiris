@@ -200,7 +200,10 @@ def _query_window(
     if type_clause:
         where.append(type_clause)
     sql = (
-        f"SELECT asset_id, asset_type, lat, lon, event_time, source_feed "
+        # payload.name is the display label the live UI shows (callsign for aircraft,
+        # ship name for vessels) — pull it out so TimeTravel matches real time.
+        f"SELECT asset_id, asset_type, lat, lon, event_time, source_feed, "
+        f"get_json_object(payload, '$.name') "
         f"FROM {FQTN} WHERE {' AND '.join(where)} "
         f"ORDER BY event_time LIMIT {int(limit)}"
     )
@@ -213,6 +216,7 @@ def _query_window(
             "lng": r[3],  # UI expects lng; column is lon
             "t": _to_epoch_ms(r[4]),
             "source_feed": r[5],
+            "name": r[6],  # callsign / vessel name from payload JSON
         }
         for r in rows
     ]
