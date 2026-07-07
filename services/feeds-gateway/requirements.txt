@@ -2,6 +2,10 @@
 # Async ASGI stack: chosen over Flask/gunicorn because this service will also
 # host streaming GraphRAG / LLM / MCP endpoints.
 fastapi==0.115.6
+# Pin Starlette to the range FastAPI 0.115.6 supports — a newer Starlette removes
+# the on_startup kwarg FastAPI passes and breaks app construction. Do NOT let the
+# MCP server's newer deps upgrade this in a shared env.
+starlette==0.41.3
 uvicorn[standard]==0.34.0
 aiokafka==0.12.0
 pydantic==2.10.4

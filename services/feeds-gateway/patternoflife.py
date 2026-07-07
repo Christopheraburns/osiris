@@ -33,13 +33,16 @@ DEFAULT_WINDOW_HOURS = float(os.environ.get("POL_WINDOW_HOURS", "6"))
 
 SYSTEM_PROMPT = (
     "You are OSIRIS, a grounded intelligence analyst writing a PATTERN-OF-LIFE brief for one "
-    "tracked asset. Use ONLY the FACTS provided. Facts are tagged: 'graph:*' is entity context "
-    "(operator/owner/flag/sanctions) from the knowledge graph; 'lake:*' is derived from the "
-    "asset's recorded movement history. Write 3-5 sentences: what the asset is and who is behind "
-    "it, then its movement pattern over the window (distance, dwell/loiter, signal gaps, proximity "
-    "to chokepoints). Explicitly flag anything notable - sanctions, a long AIS/ADS-B dropout, "
-    "loitering near a chokepoint. Cite the source tag inline in parentheses. If a fact is missing, "
-    "say so; never invent."
+    "tracked asset. Use ONLY the FACTS provided. Facts are tagged by source: 'observed:live' is "
+    "what the operator is currently seeing on the asset; 'graph:*' is entity context "
+    "(operator/owner/flag/sanctions) from the reference knowledge graph; 'lake:*' is derived from "
+    "the asset's recorded movement history. Write 3-5 sentences: first what the asset is (from "
+    "observed + graph facts), then its movement pattern over the window (distance, dwell/loiter, "
+    "signal gaps, proximity to chokepoints). Explicitly flag anything notable - sanctions, a long "
+    "AIS/ADS-B dropout, loitering near a chokepoint. IMPORTANT: if a 'graph_match: not found' fact "
+    "is present, state plainly that the asset is not in the reference graph and give NO owner, "
+    "operator, or sanctions - do not infer them. Cite the source tag inline in parentheses. If "
+    "movement data is absent, say so. Never invent facts."
 )
 
 # Strategic maritime/air chokepoints for proximity flagging (name, lat, lng).
@@ -114,6 +117,31 @@ def _graph_facts(subject: str, sub: dict) -> list[dict]:
     return facts
 
 
+def _observed_facts(subject: str, entity: dict) -> list[dict]:
+    """Facts from the live entity the operator selected — always available, even for
+    assets absent from the graph and the lake. Tagged ``observed:live``."""
+    facts: list[dict] = []
+
+    def add(pred: str, val: Any) -> None:
+        if val not in (None, "", "N/A"):
+            facts.append(_fact(subject, pred, val, "observed:live"))
+
+    if (entity.get("type") or "").lower() == "vessel":
+        add("kind", "vessel")
+        add("mmsi", entity.get("mmsi"))
+        add("imo", entity.get("imo"))
+        add("flag", entity.get("flag"))
+        add("destination", entity.get("destination"))
+        add("speed_knots", entity.get("speed"))
+    else:
+        add("kind", "aircraft")
+        add("callsign", entity.get("callsign"))
+        add("icao24", entity.get("icao24"))
+        add("model", entity.get("model"))
+        add("registration", entity.get("registration"))
+    return facts
+
+
 def _track_features(subject: str, track: list[dict]) -> list[dict]:
     facts: list[dict] = []
     n = len(track)
@@ -175,9 +203,21 @@ async def stream(entity: dict, window_hours: Any = None) -> AsyncIterator[bytes]
     except (TypeError, ValueError):
         hours = DEFAULT_WINDOW_HOURS
 
-    # 1) graph/entity context
+    # 0) observed live attributes — always present, even off-graph and off-lake
+    facts = _observed_facts(str(subject), entity)
+
+    # 1) graph/entity context (operator/owner/flag/sanctions) — often empty for a
+    #    live asset, since the reference graph holds orgs/airlines/vessels-by-IMO.
     sub = await _resolve_graph(entity)
-    facts = _graph_facts(str(subject), sub)
+    gfacts = _graph_facts(str(subject), sub)
+    if gfacts:
+        facts += gfacts
+    else:
+        facts.append(_fact(
+            str(subject), "graph_match",
+            "not found in the reference graph — no ownership/sanctions context available",
+            "graph:memgraph",
+        ))
 
     # 2) lake trajectory + derived features
     aid = _lake_asset_id(entity)
@@ -196,9 +236,12 @@ async def stream(entity: dict, window_hours: Any = None) -> AsyncIterator[bytes]
 
     # 3) grounded narrative
     user_prompt = (
-        f"SUBJECT: {entity.get('type', 'asset')} {subject} "
-        f"(window {int(hours)}h)\n\nFACTS:\n{_facts_block(facts)}\n\n"
-        f"Write the pattern-of-life brief using only these facts, citing source tags."
+        f"SUBJECT: {entity.get('type', 'asset')} {subject} (window {int(hours)}h)\n\n"
+        f"FACTS:\n{_facts_block(facts)}\n\n"
+        "Write the pattern-of-life brief. Identify the asset from observed + graph facts; if it is "
+        "not in the reference graph, say so and give no ownership/sanctions. Then describe its "
+        "movement pattern from the lake facts and flag any anomalies. Use only these facts and cite "
+        "source tags."
     )
     parts: list[str] = []
     async for token in llm.chat_stream(SYSTEM_PROMPT, user_prompt):
