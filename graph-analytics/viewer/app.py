@@ -144,7 +144,7 @@ _PAGE = """<!doctype html><html><head><meta charset="utf-8">
   header{padding:10px 16px;border-bottom:1px solid var(--edge);display:flex;align-items:baseline;gap:12px}
   header b{font-size:15px;letter-spacing:.4px} header span{color:var(--muted)}
   main{flex:1;display:flex;min-height:0}
-  aside{width:340px;border-right:1px solid var(--edge);overflow:auto;padding:10px}
+  aside{flex:0 0 340px;border-right:1px solid var(--edge);overflow:auto;padding:10px}
   h2{font-size:11px;text-transform:uppercase;letter-spacing:.8px;color:var(--muted);margin:14px 6px 6px}
   table{width:100%;border-collapse:collapse} td{padding:4px 6px;border-bottom:1px solid var(--edge)}
   td.n{color:var(--muted);text-align:right;font-variant-numeric:tabular-nums;width:64px}
@@ -153,7 +153,8 @@ _PAGE = """<!doctype html><html><head><meta charset="utf-8">
   .clu{display:flex;justify-content:space-between;padding:5px 6px;border-bottom:1px solid var(--edge);cursor:pointer}
   .clu:hover{background:#1a2440} .clu .sz{color:var(--accent);font-variant-numeric:tabular-nums}
   .clu small{color:var(--muted);display:block}
-  #graph{flex:1;position:relative} #hint{position:absolute;top:12px;left:12px;color:var(--muted)}
+  #graph{flex:1;min-width:0;overflow:hidden;position:relative}
+  #hint{position:absolute;top:12px;left:12px;color:var(--ink);z-index:2;background:rgba(11,16,32,0.75);padding:2px 7px;border-radius:4px}
 </style></head>
 <body>
 <header><b>OSIRIS · GRAPH ANALYTICS</b>
@@ -195,28 +196,32 @@ async function loadCentral(label){
   try{
     const d=await j('/api/central?limit=25'+q);
     document.querySelector('#central tbody').innerHTML=(d.entities||[]).map(e=>
-      `<tr class="row" onclick="showNeighborhood(${e.id},'${(e.name||'').replace(/'/g,'')}')">
+      `<tr class="row" onclick="showNeighborhood(${e.id})">
          <td><span class="lab">${e.label||''}</span>${e.name||'—'}</td>
          <td class="n">${(+e.pagerank||0).toFixed(3)}</td></tr>`).join('')
       || '<tr><td class="muted">no PageRank on the graph — run enrich_memgraph.py</td></tr>';
   }catch(e){document.querySelector('#central tbody').innerHTML='<tr><td>'+err(e.message)+'</td></tr>';}
 }
-async function showNeighborhood(id,name){
-  document.getElementById('hint').textContent='loading relationships for '+(name||id)+' …';
+async function showNeighborhood(id){
+  document.getElementById('hint').textContent='loading relationships …';
   let d;
   try{ d=await j('/api/neighborhood/'+encodeURIComponent(id)); }
   catch(e){ document.getElementById('hint').textContent='error: '+e.message; return; }
+  const c=(d.nodes||[]).find(n=>n.id===d.center)||{};
+  const rels=Math.max(0,(d.nodes||[]).length-1);
   document.getElementById('hint').textContent=
-    (name||id)+' — '+Math.max(0,(d.nodes||[]).length-1)+' relationships (click a node to expand)';
-  if(!G){G=ForceGraph()(document.getElementById('graph'))
+    (c.name||id)+' — '+rels+(rels?' relationships (click a node to expand)':' — no relationships in the graph');
+  const g=document.getElementById('graph');
+  if(!G){G=ForceGraph()(g)
       .backgroundColor('#0b1020').linkColor(()=>'#26324d').linkWidth(0.5)
       .linkLabel(l=>l.rel||'')
       .nodeLabel(n=>`${n.label}: ${n.name} (pr ${(+n.pagerank).toFixed(3)})`)
-      .onNodeClick(n=>showNeighborhood(n.id,n.name))
+      .onNodeClick(n=>showNeighborhood(n.id))
       .nodeCanvasObject((n,ctx,s)=>{const r=2+Math.sqrt((+n.pagerank||0)*400);
         ctx.beginPath();ctx.arc(n.x,n.y,r,0,2*Math.PI);ctx.fillStyle=col(n.label);ctx.fill();
         if(r>4||s>1.5){ctx.fillStyle='#cdd6e6';ctx.font=`${10/s}px sans-serif`;
           ctx.fillText(n.name||'',n.x+r+1,n.y+3);}});}
+  G.width(g.clientWidth).height(g.clientHeight);   // keep canvas inside its flex cell
   G.graphData({nodes:d.nodes.map(n=>({...n})),
     links:d.links.map(l=>({source:l.source,target:l.target,rel:l.rel}))});
 }
