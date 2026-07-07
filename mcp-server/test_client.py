@@ -43,6 +43,21 @@ def _clean_base(url: str) -> str:
     return url
 
 
+def _coerce(v: str):
+    """Turn a --set value string into int/float/bool/None/str."""
+    low = v.lower()
+    if low in ("true", "false"):
+        return low == "true"
+    if low in ("null", "none"):
+        return None
+    for cast in (int, float):
+        try:
+            return cast(v)
+        except ValueError:
+            pass
+    return v
+
+
 def _flatten(exc, depth: int = 0) -> list[str]:
     """Recursively unwrap ExceptionGroups / __cause__ so the real error shows."""
     indent = "  " * depth
@@ -114,6 +129,8 @@ async def main() -> int:
     ap.add_argument("command", nargs="?", default="list", choices=["list", "call"])
     ap.add_argument("tool", nargs="?", help="tool name (for `call`)")
     ap.add_argument("--args", default="{}", help="JSON arguments for `call`")
+    ap.add_argument("--set", action="append", default=[], metavar="KEY=VALUE",
+                    help="tool argument as key=value (repeatable; avoids shell JSON quoting)")
     a = ap.parse_args()
 
     if not a.url:
@@ -131,7 +148,21 @@ async def main() -> int:
             if not a.tool:
                 print("error: `call` needs a tool name", file=sys.stderr)
                 return
-            arguments = json.loads(a.args)
+            arguments = {}
+            if a.args and a.args.strip() not in ("", "{}"):
+                try:
+                    arguments.update(json.loads(a.args))
+                except json.JSONDecodeError as e:
+                    print(f"error: --args is not valid JSON ({e}). PowerShell often strips "
+                          "embedded quotes — use --set instead, e.g.  --set max_results=5",
+                          file=sys.stderr)
+                    return
+            for pair in a.set:
+                key, sep, val = pair.partition("=")
+                if not sep:
+                    print(f"error: --set expects KEY=VALUE, got {pair!r}", file=sys.stderr)
+                    return
+                arguments[key] = _coerce(val)
             print(f"calling {a.tool}({arguments}) ...\n")
             res = await session.call_tool(a.tool, arguments)
             for block in res.content:

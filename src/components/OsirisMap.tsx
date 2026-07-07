@@ -187,6 +187,8 @@ function OsirisMap({ data, activeLayers, onEntityClick, onMouseCoords, onRightCl
       // Aircraft carrying an ICAO airline designator (airline_code) are graph-enrichable
       // — render them in a distinct royal blue (theme-independent marker).
       createIcon(map, 'plane-enrich', '#448AFF', 24);
+      // TimeTravel historical aircraft — amber plane icon (matches the replay palette).
+      createIcon(map, 'plane-amber', '#FFCA28', 24);
       createDot(map, 'dot-gold', isGhost ? phantomPurple : '#D4AF37', 8);
       createDot(map, 'dot-red', isGhost ? phantomPurple : '#D32F2F', 10);
       createDot(map, 'dot-orange', isGhost ? phantomPurple : '#E65100', 10);
@@ -568,16 +570,25 @@ function OsirisMap({ data, activeLayers, onEntityClick, onMouseCoords, onRightCl
         'line-opacity': ['interpolate',['linear'],['zoom'], 1, 0.3, 5, 0.45, 10, 0.7],
       }});
 
-      // TimeTravel replay entities — amber "historical" halo + dot, colored by domain
-      map.addLayer({ id: 'tt-glow', type: 'circle', source: 'timetravel', paint: {
+      // TimeTravel replay entities. Aircraft render as a yellow plane icon (matching
+      // the live symbology); vessels/other keep the amber "historical" halo + dot.
+      map.addLayer({ id: 'tt-glow', type: 'circle', source: 'timetravel',
+        filter: ['!=', ['get','domain'], 'AIR'], paint: {
         'circle-radius': ['interpolate',['linear'],['zoom'], 1,5, 5,9, 10,16],
         'circle-color': '#FFB300', 'circle-opacity': 0.10, 'circle-blur': 1,
       }});
-      map.addLayer({ id: 'tt-dots', type: 'circle', source: 'timetravel', paint: {
+      map.addLayer({ id: 'tt-dots', type: 'circle', source: 'timetravel',
+        filter: ['!=', ['get','domain'], 'AIR'], paint: {
         'circle-radius': ['interpolate',['linear'],['zoom'], 1,2.5, 5,4.5, 10,7],
-        'circle-color': ['match', ['get','domain'], 'AIR','#FFCA28', 'SEA','#4FC3F7', '#FFB300'],
+        'circle-color': ['match', ['get','domain'], 'SEA','#4FC3F7', '#FFB300'],
         'circle-opacity': 0.9,
         'circle-stroke-width': 1, 'circle-stroke-color': '#FFB300', 'circle-stroke-opacity': 0.5,
+      }});
+      map.addLayer({ id: 'tt-planes', type: 'symbol', source: 'timetravel',
+        filter: ['==', ['get','domain'], 'AIR'], layout: {
+        'icon-image': 'plane-amber',
+        'icon-size': ['interpolate',['linear'],['zoom'], 1,0.4, 5,0.7, 10,1],
+        'icon-allow-overlap': true,
       }});
       map.addLayer({ id: 'tt-label', type: 'symbol', source: 'timetravel', minzoom: 5, layout: {
         'text-field': ['get','label'], 'text-size': 9, 'text-font': ['Open Sans Regular'],
@@ -663,6 +674,32 @@ function OsirisMap({ data, activeLayers, onEntityClick, onMouseCoords, onRightCl
           </div>
           <button onclick="window.openOsirisIntel({ callsign: '${idSafe(cs)}', icao24: '${idSafe(p.icao24||'')}', model: '${idSafe(p.model||'')}', registration: '${idSafe(p.registration||'')}' })" style="width:100%;margin-top:8px;padding:6px 12px;background:rgba(212,175,55,0.15);border:1px solid rgba(212,175,55,0.5);color:#D4AF37;font-family:'JetBrains Mono',monospace;font-size:10px;font-weight:bold;letter-spacing:0.1em;border-radius:4px;cursor:pointer;">[ DEEP DIVE INTEL ]</button>
         </div>`);
+      });
+      map.on('mouseenter', layer, () => { map.getCanvas().style.cursor = 'pointer'; });
+      map.on('mouseleave', layer, () => { map.getCanvas().style.cursor = ''; });
+    });
+
+    // ── TimeTravel replay entities (historical) — same select→deep-dive as live ──
+    const ttPopup = (coords: any, p: any) => {
+      const id = idSafe(String(p.asset_id || ''));
+      const isSea = String(p.kind || '') === 'vessel';
+      const intel = isSea
+        ? `window.openOsirisIntel({ type: 'vessel', mmsi: '${id}' })`
+        : `window.openOsirisIntel({ callsign: '${id}', icao24: '${id}' })`;
+      const glyph = isSea ? '🚢' : '✈';
+      popup(coords, `<div style="${pStyle}border:1px solid rgba(255,202,40,0.4);">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+          <span style="color:#FFCA28;font-size:14px;font-weight:700;letter-spacing:0.1em;">${glyph} ${htmlEsc(String(p.asset_id || ''))}</span>
+          <span style="color:#5C5A54;font-size:9px;">HISTORICAL</span>
+        </div>
+        <div style="font-size:10px;margin-bottom:8px;"><span style="color:#5C5A54;">TYPE</span> <span style="color:#E8E6E0;">${htmlEsc(String(p.asset_type || (isSea ? 'vessel' : 'aircraft')))}</span> · <span style="color:#E8E6E0;">${coords[1].toFixed(2)},${coords[0].toFixed(2)}</span></div>
+        <button onclick="${intel}" style="width:100%;padding:6px 12px;background:rgba(255,202,40,0.15);border:1px solid rgba(255,202,40,0.5);color:#FFCA28;font-family:'JetBrains Mono',monospace;font-size:10px;font-weight:bold;letter-spacing:0.1em;border-radius:4px;cursor:pointer;">[ DEEP DIVE INTEL ]</button>
+      </div>`);
+    };
+    ['tt-planes', 'tt-dots'].forEach(layer => {
+      map.on('click', layer, e => {
+        if (!e.features?.length) return;
+        ttPopup((e.features[0].geometry as any).coordinates, e.features[0].properties as any);
       });
       map.on('mouseenter', layer, () => { map.getCanvas().style.cursor = 'pointer'; });
       map.on('mouseleave', layer, () => { map.getCanvas().style.cursor = ''; });
@@ -1272,7 +1309,8 @@ function OsirisMap({ data, activeLayers, onEntityClick, onMouseCoords, onRightCl
       const domain = at.includes('VESSEL') || at.includes('SHIP') ? 'SEA'
         : (at.includes('FLIGHT') || at.includes('AIR') || at.includes('COMMERCIAL') || at.includes('MILITARY') || at.includes('JET') || at.includes('PRIVATE')) ? 'AIR'
         : 'OTHER';
-      return { type: 'Feature' as const, geometry: { type: 'Point' as const, coordinates: [e.lng, e.lat] }, properties: { domain, label: e.asset_id } };
+      const kind = domain === 'SEA' ? 'vessel' : domain === 'AIR' ? 'aircraft' : 'other';
+      return { type: 'Feature' as const, geometry: { type: 'Point' as const, coordinates: [e.lng, e.lat] }, properties: { domain, kind, asset_id: e.asset_id, asset_type: e.asset_type, label: e.asset_id } };
     }));
     // While replaying, suppress the live moving layers so the historical picture is unambiguous;
     // when TimeTravel is off, restore them from activeLayers.

@@ -18,7 +18,7 @@ interface Props {
   onExit: () => void;
 }
 
-const SPEEDS = [10, 60, 300, 1200, 3600];
+const SPEEDS = [1, 10, 60, 300, 1200];
 const TRAIL_MS = 120_000;
 const TICK_MS = 100;
 const CHUNK_MS = 5 * 60_000;
@@ -54,7 +54,7 @@ export default function TimeTravelBar({ onFrame, onExit }: Props) {
   const [errorMsg, setErrorMsg] = useState('');
   const [bounds, setBounds] = useState<{ min: number; max: number; count: number } | null>(null);
   const [playing, setPlaying] = useState(false);
-  const [speed, setSpeed] = useState(300);
+  const [speed, setSpeed] = useState(1);
   const [playhead, setPlayhead] = useState(0);
   const [buffering, setBuffering] = useState(false);
   const [preparing, setPreparing] = useState(false);
@@ -67,7 +67,7 @@ export default function TimeTravelBar({ onFrame, onExit }: Props) {
   const feedsRef = useRef<string[]>([]);
   const playheadRef = useRef(0);
   const playingRef = useRef(false);
-  const speedRef = useRef(300);
+  const speedRef = useRef(1);
   playingRef.current = playing;
   speedRef.current = speed;
 
