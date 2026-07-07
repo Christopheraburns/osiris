@@ -62,10 +62,44 @@ async def central(limit: int = 25, label: str | None = None):
         params["label"] = label
     rows = await _cypher(
         f"MATCH (n) WHERE {where} "
-        "RETURN labels(n)[0] AS label, coalesce(n.name, n.callsign, n.imo, n.icao, '') AS name, "
-        "n.pagerank AS pagerank, n.community AS community, n.degree AS degree "
+        "RETURN id(n) AS id, labels(n)[0] AS label, coalesce(n.name, n.callsign, n.imo, n.icao, '') AS name, "
+        "n.pagerank AS pagerank, n.degree AS degree "
         "ORDER BY n.pagerank DESC LIMIT $limit", params)
     return JSONResponse({"entities": rows})
+
+
+@app.get("/api/labels")
+async def labels():
+    """Node types present in the enriched graph, for the scope dropdown."""
+    rows = await _cypher(
+        "MATCH (n) WHERE n.pagerank IS NOT NULL "
+        "RETURN labels(n)[0] AS label, count(n) AS n ORDER BY n DESC")
+    return JSONResponse({"labels": rows})
+
+
+@app.get("/api/neighborhood/{node_id}")
+async def neighborhood(node_id: int, limit: int = 120):
+    """1-hop ego network of one node — the interactive relationship view. Neighbors
+    are capped to the top `limit` by PageRank so hub nodes stay renderable."""
+    center = await _cypher(
+        "MATCH (n) WHERE id(n) = $id "
+        "RETURN id(n) AS id, coalesce(n.name, n.callsign, n.imo, '') AS name, "
+        "labels(n)[0] AS label, coalesce(n.pagerank, 0.0) AS pagerank", {"id": int(node_id)})
+    nbrs = await _cypher(
+        "MATCH (n)-[r]-(m) WHERE id(n) = $id "
+        "RETURN id(m) AS id, coalesce(m.name, m.callsign, m.imo, '') AS name, labels(m)[0] AS label, "
+        "coalesce(m.pagerank, 0.0) AS pagerank, type(r) AS rel "
+        "ORDER BY m.pagerank DESC LIMIT $limit", {"id": int(node_id), "limit": int(limit)})
+    c = center[0] if center else {"id": int(node_id), "name": "", "label": "", "pagerank": 0.0}
+    nodes = [c]
+    seen = {c["id"]}
+    links = []
+    for nb in nbrs:
+        if nb["id"] not in seen:
+            nodes.append({"id": nb["id"], "name": nb["name"], "label": nb["label"], "pagerank": nb["pagerank"]})
+            seen.add(nb["id"])
+        links.append({"source": c["id"], "target": nb["id"], "rel": nb.get("rel")})
+    return JSONResponse({"nodes": nodes, "links": links, "center": c["id"]})
 
 
 @app.get("/api/clusters")
@@ -126,12 +160,13 @@ _PAGE = """<!doctype html><html><head><meta charset="utf-8">
   <span>PageRank &amp; communities · Spark GraphFrames → live graph</span></header>
 <main>
   <aside>
-    <h2>Most central entities</h2>
+    <h2>Most central entities
+      <select id="labelsel" style="float:right;background:#0b1020;color:var(--ink);border:1px solid var(--edge);border-radius:4px;font-size:10px;padding:1px 3px">
+        <option value="">all types</option></select></h2>
     <table id="central"><tbody><tr><td class="muted">loading…</td></tr></tbody></table>
-    <h2>Communities</h2>
-    <div id="clusters">loading…</div>
+    <p style="color:var(--muted);font-size:10px;margin:12px 6px">Click any entity to explore its relationships in the graph →</p>
   </aside>
-  <div id="graph"><div id="hint">Select a community to render its network</div></div>
+  <div id="graph"><div id="hint">Select an entity to explore its relationships</div></div>
 </main>
 <script>
 const PAL={Organization:'#448AFF',Country:'#66BB6A',Vessel:'#26C6DA',Aircraft:'#FFCA28',
@@ -139,40 +174,53 @@ const PAL={Organization:'#448AFF',Country:'#66BB6A',Vessel:'#26C6DA',Aircraft:'#
 const col=l=>PAL[l]||'#90A4AE';
 let G=null;
 
-async function j(u){const r=await fetch(u);return r.json();}
+async function j(u){const r=await fetch(u);if(!r.ok){throw new Error('HTTP '+r.status+' — '+(await r.text()).slice(0,200));}return r.json();}
+const err=(m)=>`<span style="color:#EF5350">${m}</span>`;
 
-async function loadCentral(){
-  const d=await j('/api/central?limit=25');
-  document.querySelector('#central tbody').innerHTML=(d.entities||[]).map(e=>
-    `<tr class="row" onclick="showCommunity('${e.community}')">
-       <td><span class="lab">${e.label||''}</span>${e.name||'—'}</td>
-       <td class="n">${(+e.pagerank||0).toFixed(3)}</td></tr>`).join('')
-    || '<tr><td class="muted">no PageRank yet — run the pipeline</td></tr>';
+async function loadLabels(){
+  try{
+    const d=await j('/api/labels');
+    const sel=document.getElementById('labelsel');
+    (d.labels||[]).forEach(l=>{const o=document.createElement('option');
+      o.value=l.label||'';o.textContent=(l.label||'?')+' ('+l.n+')';sel.appendChild(o);});
+    sel.onchange=()=>loadCentral(sel.value);
+    // Open on the first non-hub type so the default view is intelligence-relevant
+    // (Country/Place dominate raw PageRank and aren't actionable).
+    const pref=(d.labels||[]).map(l=>l.label).find(x=>x && !['Country','Place'].includes(x));
+    if(pref){sel.value=pref;loadCentral(pref);} else {loadCentral('');}
+  }catch(e){loadCentral('');}
 }
-async function loadClusters(){
-  const d=await j('/api/clusters?limit=30');
-  document.getElementById('clusters').innerHTML=(d.clusters||[]).map(c=>
-    `<div class="clu" onclick="showCommunity('${c.community}')">
-       <span>community ${c.community}<small>click to render</small></span>
-       <span class="sz">${c.size}</span></div>`).join('')
-    || '<div class="muted">no communities yet</div>';
+async function loadCentral(label){
+  const q=label?('&label='+encodeURIComponent(label)):'';
+  try{
+    const d=await j('/api/central?limit=25'+q);
+    document.querySelector('#central tbody').innerHTML=(d.entities||[]).map(e=>
+      `<tr class="row" onclick="showNeighborhood(${e.id},'${(e.name||'').replace(/'/g,'')}')">
+         <td><span class="lab">${e.label||''}</span>${e.name||'—'}</td>
+         <td class="n">${(+e.pagerank||0).toFixed(3)}</td></tr>`).join('')
+      || '<tr><td class="muted">no PageRank on the graph — run enrich_memgraph.py</td></tr>';
+  }catch(e){document.querySelector('#central tbody').innerHTML='<tr><td>'+err(e.message)+'</td></tr>';}
 }
-async function showCommunity(cid){
-  document.getElementById('hint').textContent='loading community '+cid+' …';
-  const d=await j('/api/community/'+encodeURIComponent(cid));
+async function showNeighborhood(id,name){
+  document.getElementById('hint').textContent='loading relationships for '+(name||id)+' …';
+  let d;
+  try{ d=await j('/api/neighborhood/'+encodeURIComponent(id)); }
+  catch(e){ document.getElementById('hint').textContent='error: '+e.message; return; }
   document.getElementById('hint').textContent=
-    (d.nodes||[]).length+' nodes · '+(d.links||[]).length+' edges — community '+cid;
+    (name||id)+' — '+Math.max(0,(d.nodes||[]).length-1)+' relationships (click a node to expand)';
   if(!G){G=ForceGraph()(document.getElementById('graph'))
       .backgroundColor('#0b1020').linkColor(()=>'#26324d').linkWidth(0.5)
+      .linkLabel(l=>l.rel||'')
       .nodeLabel(n=>`${n.label}: ${n.name} (pr ${(+n.pagerank).toFixed(3)})`)
+      .onNodeClick(n=>showNeighborhood(n.id,n.name))
       .nodeCanvasObject((n,ctx,s)=>{const r=2+Math.sqrt((+n.pagerank||0)*400);
         ctx.beginPath();ctx.arc(n.x,n.y,r,0,2*Math.PI);ctx.fillStyle=col(n.label);ctx.fill();
-        if(r>4){ctx.fillStyle='#cdd6e6';ctx.font=`${10/s}px sans-serif`;
+        if(r>4||s>1.5){ctx.fillStyle='#cdd6e6';ctx.font=`${10/s}px sans-serif`;
           ctx.fillText(n.name||'',n.x+r+1,n.y+3);}});}
   G.graphData({nodes:d.nodes.map(n=>({...n})),
-    links:d.links.map(l=>({source:l.source,target:l.target}))});
+    links:d.links.map(l=>({source:l.source,target:l.target,rel:l.rel}))});
 }
-loadCentral();loadClusters();
+loadLabels();
 </script></body></html>"""
 
 
