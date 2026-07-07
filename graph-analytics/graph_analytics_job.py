@@ -43,8 +43,8 @@ from graphframes import GraphFrame
 EXPORT_DIR = os.environ.get("EXPORT_DIR", "./graph-export").rstrip("/")
 METRICS_TABLE = os.environ.get("METRICS_TABLE", "osiris.graph_metrics")
 CHECKPOINT_DIR = os.environ.get("CHECKPOINT_DIR", "/tmp/osiris-graph-checkpoints")
-PR_MAX_ITER = int(os.environ.get("PAGERANK_ITERS", "10"))
-LPA_MAX_ITER = int(os.environ.get("LPA_ITERS", "5"))
+PR_MAX_ITER = int(os.environ.get("PAGERANK_ITERS", "5"))
+LPA_MAX_ITER = int(os.environ.get("LPA_ITERS", "2"))
 METRICS_CSV = os.environ.get("METRICS_CSV", f"{EXPORT_DIR}/metrics.csv")
 
 
@@ -79,22 +79,31 @@ def main() -> int:
     pr = g.pageRank(resetProbability=0.15, maxIter=PR_MAX_ITER).vertices.select(
         "id", F.col("pagerank")
     )
-    lpa = g.labelPropagation(maxIter=LPA_MAX_ITER).select(
-        "id", F.col("label").alias("community").cast("string")
-    )
     deg = g.degrees.select("id", F.col("degree"))  # undirected total degree
 
     metrics = (
         vertices.alias("v")
         .join(pr, "id", "left")
-        .join(lpa, "id", "left")
         .join(deg, "id", "left")
     )
 
+    # labelPropagation (communities) does iterative message-passing that is highly
+    # sensitive to hub-node skew — on this graph a few super-connected reference nodes
+    # make single tasks run 10-15 min each and stall the whole stage. Off by default so
+    # the run completes; set RUN_COMMUNITIES=true (optionally LPA_ITERS higher) to try
+    # it on a bigger cluster. When off, 'community' is null.
+    if os.environ.get("RUN_COMMUNITIES", "false").lower() == "true":
+        lpa = g.labelPropagation(maxIter=LPA_MAX_ITER).select(
+            "id", F.col("label").alias("community").cast("string")
+        )
+        metrics = metrics.join(lpa, "id", "left")
+    else:
+        metrics = metrics.withColumn("community", F.lit(None).cast("string"))
+
     # connectedComponents is UNBOUNDED (iterates to convergence) and checkpoints to
-    # S3 every step — on a small cluster it dominates runtime (an hour+). It's off by
+    # S3 every step — on a small cluster it dominates runtime (an hour+). Off by
     # default; set RUN_CONNECTED_COMPONENTS=true to include it. When off, 'component'
-    # is null and PageRank + communities + degree still land.
+    # is null.
     if os.environ.get("RUN_CONNECTED_COMPONENTS", "false").lower() == "true":
         cc = g.connectedComponents().select("id", F.col("component").cast("string"))
         metrics = metrics.join(cc, "id", "left")
