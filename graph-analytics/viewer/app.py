@@ -202,6 +202,28 @@ async function loadCentral(label){
       || '<tr><td class="muted">no PageRank on the graph — run enrich_memgraph.py</td></tr>';
   }catch(e){document.querySelector('#central tbody').innerHTML='<tr><td>'+err(e.message)+'</td></tr>';}
 }
+function graph(){
+  const el=document.getElementById('graph');
+  if(G) return G;
+  G=ForceGraph()(el)
+    .width(el.clientWidth).height(el.clientHeight)
+    .backgroundColor('#0b1020')
+    .linkColor(()=>'#3a4a6b').linkWidth(1)
+    .linkDirectionalArrowLength(3.5).linkDirectionalArrowRelPos(1)
+    .linkLabel(l=>l.rel||'')
+    .nodeRelSize(4)
+    .nodeVal(n=>1+Math.min(8,Math.sqrt(+n.pagerank||0)))
+    .nodeColor(n=>col(n.label))
+    .nodeLabel(n=>`${n.label}: ${n.name||''} · pr ${(+n.pagerank||0).toFixed(3)}`)
+    .nodeCanvasObjectMode(()=>'after')
+    .nodeCanvasObject((n,ctx,s)=>{ if(s>=0.9){ctx.fillStyle='#cdd6e6';ctx.font=`${11/s}px sans-serif`;
+      ctx.textBaseline='middle';ctx.fillText(n.name||'',n.x+7,n.y);} })
+    .onNodeClick(n=>showNeighborhood(n.id))
+    .d3VelocityDecay(0.3);
+  G.d3Force('charge').strength(-140);            // repulsion so nodes spread out
+  try{ new ResizeObserver(()=>G.width(el.clientWidth).height(el.clientHeight)).observe(el); }catch(_){}
+  return G;
+}
 async function showNeighborhood(id){
   document.getElementById('hint').textContent='loading relationships …';
   let d;
@@ -211,19 +233,11 @@ async function showNeighborhood(id){
   const rels=Math.max(0,(d.nodes||[]).length-1);
   document.getElementById('hint').textContent=
     (c.name||id)+' — '+rels+(rels?' relationships (click a node to expand)':' — no relationships in the graph');
-  const g=document.getElementById('graph');
-  if(!G){G=ForceGraph()(g)
-      .backgroundColor('#0b1020').linkColor(()=>'#26324d').linkWidth(0.5)
-      .linkLabel(l=>l.rel||'')
-      .nodeLabel(n=>`${n.label}: ${n.name} (pr ${(+n.pagerank).toFixed(3)})`)
-      .onNodeClick(n=>showNeighborhood(n.id))
-      .nodeCanvasObject((n,ctx,s)=>{const r=2+Math.sqrt((+n.pagerank||0)*400);
-        ctx.beginPath();ctx.arc(n.x,n.y,r,0,2*Math.PI);ctx.fillStyle=col(n.label);ctx.fill();
-        if(r>4||s>1.5){ctx.fillStyle='#cdd6e6';ctx.font=`${10/s}px sans-serif`;
-          ctx.fillText(n.name||'',n.x+r+1,n.y+3);}});}
-  G.width(g.clientWidth).height(g.clientHeight);   // keep canvas inside its flex cell
-  G.graphData({nodes:d.nodes.map(n=>({...n})),
+  const g=graph();
+  g.graphData({nodes:d.nodes.map(n=>({...n})),
     links:d.links.map(l=>({source:l.source,target:l.target,rel:l.rel}))});
+  g.d3ReheatSimulation();
+  setTimeout(()=>{try{g.zoomToFit(500,60);}catch(_){}},400);   // frame the graph after it settles
 }
 loadLabels();
 </script></body></html>"""
