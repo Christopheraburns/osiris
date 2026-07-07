@@ -1,0 +1,9 @@
+# OSIRIS graph-analytics — the non-Spark pieces (export, enrich, viewer).
+# The Spark job (graph_analytics_job.py) runs on the Spark 3 Data Hub, which
+# already provides pyspark; GraphFrames is supplied via --packages/--jars there.
+httpx==0.28.1
+fastapi==0.115.6
+starlette==0.41.3
+uvicorn[standard]==0.34.0
+# Only needed if EXPORT_DIR is an s3:// path (export_graph.py writes to the lake).
+boto3>=1.34

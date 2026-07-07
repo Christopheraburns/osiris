@@ -36,11 +36,24 @@ MEMGRAPH_API_TOKEN = os.environ.get("MEMGRAPH_API_TOKEN")
 INTEL_URL = os.environ.get("INTEL_URL", "http://localhost:4000").rstrip("/")
 SECURE_MODE_DEFAULT = os.environ.get("SECURE_MODE_DEFAULT", "true").lower() == "true"
 
-mcp = FastMCP(
-    "OSIRIS",
-    host="127.0.0.1",
-    port=int(os.environ.get("CDSW_APP_PORT", "8092")),
-)
+# The streamable-HTTP transport has DNS-rebinding protection that validates the
+# Host/Origin header against an allow-list. Behind the CAI ingress the public host
+# (mcp.<env>.cloudera.site) is not in the default list, so the transport answers
+# 421 Misdirected Request — which also makes Agent Studio unable to read the tools.
+# The ingress is trusted, so turn that check off and allow all hosts/origins.
+_MCP_KW = {"host": "127.0.0.1", "port": int(os.environ.get("CDSW_APP_PORT", "8092"))}
+try:
+    from mcp.server.transport_security import TransportSecuritySettings
+
+    _MCP_KW["transport_security"] = TransportSecuritySettings(
+        enable_dns_rebinding_protection=False,
+        allowed_hosts=["*"],
+        allowed_origins=["*"],
+    )
+except Exception:  # SDK without this knob — construct without it
+    pass
+
+mcp = FastMCP("OSIRIS", **_MCP_KW)
 
 # Read-only Cypher guard — reject any mutating clause.
 _WRITE_RE = re.compile(
@@ -207,6 +220,82 @@ async def graph_neighborhood(icao: Optional[str] = None, name: Optional[str] = N
         )
         return await query_graph(q, {"name": name})
     return {"error": "provide icao or name"}
+
+
+# ── Distributed graph analytics (Spark GraphFrames → graph) ───────────────────
+
+@mcp.tool()
+async def central_entities(limit: int = 20, label: Optional[str] = None) -> dict:
+    """Most central entities in the OSIRIS graph by PageRank — from the distributed
+    GraphFrames analytics (Spark) written back onto the graph. Optionally filter to
+    one node label (e.g. 'Organization', 'Vessel', 'Country').
+
+    Use this to answer "who are the most connected / influential actors" without
+    reasoning over the whole graph. Returns { entities: [ {label, name, pagerank,
+    community, degree} ] }. Empty means the graph-analytics pipeline has not run yet.
+    """
+    where = "n.pagerank IS NOT NULL"
+    params: dict = {"limit": int(limit)}
+    if label:
+        where += " AND labels(n)[0] = $label"
+        params["label"] = label
+    q = (
+        f"MATCH (n) WHERE {where} "
+        "RETURN labels(n)[0] AS label, "
+        "coalesce(n.name, n.callsign, n.imo, n.icao, '') AS name, "
+        "n.pagerank AS pagerank, n.community AS community, n.degree AS degree "
+        "ORDER BY n.pagerank DESC LIMIT $limit"
+    )
+    res = await query_graph(q, params)
+    if isinstance(res, dict) and res.get("error"):
+        return res
+    rows = _first_list(res) if isinstance(res, dict) else res
+    if not rows:
+        return {"entities": [], "note": "no PageRank on the graph yet — run the graph-analytics pipeline"}
+    return {"entities": rows}
+
+
+@mcp.tool()
+async def network_clusters(limit: int = 15, members_per_cluster: int = 3) -> dict:
+    """Largest communities/clusters in the OSIRIS graph (Label Propagation from the
+    Spark GraphFrames job), each with its top members by PageRank. Surfaces network
+    structure — fleets, ownership rings, co-registration clusters — an operator would
+    otherwise miss. Returns { clusters: [ {community, size, top_members:[...]} ] }.
+    """
+    k = max(1, min(int(members_per_cluster), 10))
+    res = await query_graph(
+        "MATCH (n) WHERE n.community IS NOT NULL "
+        "RETURN n.community AS community, count(n) AS size "
+        "ORDER BY size DESC LIMIT $limit",
+        {"limit": int(limit)},
+    )
+    if isinstance(res, dict) and res.get("error"):
+        return res
+    rows = _first_list(res) if isinstance(res, dict) else res
+    if not rows:
+        return {"clusters": [], "note": "no communities on the graph yet — run the graph-analytics pipeline"}
+
+    comms = [r.get("community") for r in rows if r.get("community") is not None]
+    top_map: dict = {}
+    if comms:
+        res2 = await query_graph(
+            "UNWIND $comms AS c "
+            "MATCH (n) WHERE n.community = c "
+            "WITH c, n ORDER BY n.pagerank DESC "
+            f"WITH c, collect(coalesce(n.name, n.callsign, n.imo, ''))[0..{k}] AS top "
+            "RETURN c AS community, top",
+            {"comms": comms},
+        )
+        rows2 = _first_list(res2) if isinstance(res2, dict) else res2
+        for r in rows2 or []:
+            top_map[r.get("community")] = r.get("top")
+
+    clusters = [
+        {"community": r.get("community"), "size": r.get("size"),
+         "top_members": top_map.get(r.get("community"), [])}
+        for r in rows
+    ]
+    return {"clusters": clusters}
 
 
 # ── Datalake history + fused intel ────────────────────────────────────────────
@@ -376,12 +465,24 @@ async def assets_of_interest(
     return {"scanned": {"flights": len(flights), "vessels": len(vessels)}, "items": items[:max_results]}
 
 
-# ── ASGI app: streamable-HTTP (/mcp) + a GET / health route for CAI ───────────
-app = mcp.streamable_http_app()
+# ── ASGI app: pick the MCP transport ─────────────────────────────────────────
+# Streamable-HTTP (default) is served at /mcp. Some MCP clients — including certain
+# Cloudera Agent Studio builds — only speak the older SSE transport and will report
+# "cannot understand the tools" against a streamable-HTTP endpoint. If that happens,
+# set MCP_TRANSPORT=sse and redeploy; the server then serves SSE at /sse (with the
+# message channel at /messages). Point Agent Studio at https://<app-url>/sse.
+MCP_TRANSPORT = os.environ.get("MCP_TRANSPORT", "streamable-http").lower()
+
+if MCP_TRANSPORT in ("sse", "sse-http"):
+    app = mcp.sse_app()
+    _ENDPOINT = "SSE endpoint at /sse (messages at /messages)"
+else:
+    app = mcp.streamable_http_app()
+    _ENDPOINT = "streamable-HTTP endpoint at /mcp"
 
 
 async def _root(_request) -> PlainTextResponse:
-    return PlainTextResponse("OSIRIS MCP server — streamable-HTTP endpoint at /mcp")
+    return PlainTextResponse(f"OSIRIS MCP server — {_ENDPOINT}")
 
 
 app.router.routes.append(Route("/", _root, methods=["GET"]))
