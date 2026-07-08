@@ -85,11 +85,14 @@ async def neighborhood(node_id: int, limit: int = 120):
         "MATCH (n) WHERE id(n) = $id "
         "RETURN id(n) AS id, coalesce(n.name, n.callsign, n.imo, '') AS name, "
         "labels(n)[0] AS label, coalesce(n.pagerank, 0.0) AS pagerank", {"id": int(node_id)})
+    # No ORDER BY: sorting a hub's edges by pagerank forces a full traversal+sort of
+    # every edge (slow for the highly-connected central entities). LIMIT alone stops
+    # early, so every selection is a fast bounded lookup — just a sample to render.
     nbrs = await _cypher(
         "MATCH (n)-[r]-(m) WHERE id(n) = $id "
         "RETURN id(m) AS id, coalesce(m.name, m.callsign, m.imo, '') AS name, labels(m)[0] AS label, "
         "coalesce(m.pagerank, 0.0) AS pagerank, type(r) AS rel "
-        "ORDER BY m.pagerank DESC LIMIT $limit", {"id": int(node_id), "limit": int(limit)})
+        "LIMIT $limit", {"id": int(node_id), "limit": int(limit)})
     c = center[0] if center else {"id": int(node_id), "name": "", "label": "", "pagerank": 0.0}
     nodes = [c]
     seen = {c["id"]}
@@ -173,7 +176,7 @@ _PAGE = """<!doctype html><html><head><meta charset="utf-8">
 const PAL={Organization:'#448AFF',Country:'#66BB6A',Vessel:'#26C6DA',Aircraft:'#FFCA28',
   Airline:'#AB47BC',Person:'#EF5350'};
 const col=l=>PAL[l]||'#90A4AE';
-let G=null;
+let G=null, reqSeq=0;
 
 async function j(u){const r=await fetch(u);if(!r.ok){throw new Error('HTTP '+r.status+' — '+(await r.text()).slice(0,200));}return r.json();}
 const err=(m)=>`<span style="color:#EF5350">${m}</span>`;
@@ -225,10 +228,12 @@ function graph(){
   return G;
 }
 async function showNeighborhood(id){
+  const seq=++reqSeq;
   document.getElementById('hint').textContent='loading relationships …';
   let d;
   try{ d=await j('/api/neighborhood/'+encodeURIComponent(id)); }
-  catch(e){ document.getElementById('hint').textContent='error: '+e.message; return; }
+  catch(e){ if(seq===reqSeq) document.getElementById('hint').textContent='error: '+e.message; return; }
+  if(seq!==reqSeq) return;   // a newer selection superseded this one
   const c=(d.nodes||[]).find(n=>n.id===d.center)||{};
   const rels=Math.max(0,(d.nodes||[]).length-1);
   document.getElementById('hint').textContent=
