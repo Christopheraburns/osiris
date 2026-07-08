@@ -27,7 +27,7 @@ from typing import Optional
 
 import httpx
 from mcp.server.fastmcp import FastMCP
-from starlette.responses import PlainTextResponse
+from starlette.responses import HTMLResponse, PlainTextResponse
 from starlette.routing import Route
 
 FEEDS_GATEWAY_URL = os.environ.get("FEEDS_GATEWAY_URL", "http://localhost:8091").rstrip("/")
@@ -481,8 +481,38 @@ else:
     _ENDPOINT = "streamable-HTTP endpoint at /mcp"
 
 
-async def _root(_request) -> PlainTextResponse:
-    return PlainTextResponse(f"OSIRIS MCP server — {_ENDPOINT}")
+def _h(s: str) -> str:
+    return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+async def _root(_request):
+    """Human-viewable landing page that lists the MCP tools this server exposes."""
+    try:
+        tools = await mcp.list_tools()
+    except Exception:  # noqa: BLE001 — fall back to a plain health line
+        return PlainTextResponse(f"OSIRIS MCP server — {_ENDPOINT}")
+
+    rows = []
+    for t in sorted(tools, key=lambda x: x.name):
+        schema = t.inputSchema or {}
+        props = schema.get("properties") or {}
+        req = set(schema.get("required") or [])
+        params = ", ".join((k + "*") if k in req else k for k in props) or "<span class=m>none</span>"
+        desc = _h((t.description or "").strip().split("\n")[0])
+        rows.append(f"<tr><td><code>{_h(t.name)}</code></td><td>{desc}</td><td class=p>{params}</td></tr>")
+
+    head = ("<!doctype html><meta charset=utf-8><title>OSIRIS · MCP</title>"
+            "<style>body{font:14px system-ui,Segoe UI,sans-serif;background:#0b1020;color:#e6ecf5;margin:0;padding:24px}"
+            "h1{font-size:18px;margin:0 0 4px}.sub{color:#8aa;font-size:12px;margin-bottom:16px}"
+            "table{border-collapse:collapse;width:100%;max-width:940px}"
+            "td,th{text-align:left;padding:7px 10px;border-bottom:1px solid #26324d;vertical-align:top}"
+            "th{color:#8aa;font-size:11px;text-transform:uppercase;letter-spacing:.06em}"
+            "code{color:#FFCA28}.p{color:#9db4ff;font-size:12px}.m{color:#5b6b8c}</style>")
+    body = (f"<h1>OSIRIS · MCP Server</h1>"
+            f"<div class=sub>{len(tools)} tools · {_ENDPOINT} · point an MCP client at <code>/mcp</code></div>"
+            "<table><tr><th>Tool</th><th>Description</th><th>Parameters (* = required)</th></tr>"
+            + "".join(rows) + "</table>")
+    return HTMLResponse(head + body)
 
 
 app.router.routes.append(Route("/", _root, methods=["GET"]))
