@@ -104,7 +104,7 @@ export default function Dashboard() {
   const [reloadKey, setReloadKey] = useState(0);
   // UI build revision — bumped on every change so you can confirm you're running the
   // latest deployed build (shown top-right in the status bar).
-  const OSIRIS_REV = 1;
+  const OSIRIS_REV = 2;
 
   const [backendStatus, setBackendStatus] = useState<'connecting' | 'connected' | 'error'>('connecting');
   const [mapView, setMapView] = useState({ zoom: 2.5, latitude: 20 });
@@ -207,6 +207,19 @@ export default function Dashboard() {
         Object.keys(next).forEach(k => { (next as any)[k] = active.includes(k); });
         return next;
       });
+    }
+
+    // Deep-link: ?lat=..&lng=..(&zoom=..) flies straight to a location on load and
+    // skips the default IP geolocation so a shared link isn't overridden. `lon` is
+    // accepted as an alias for `lng`.
+    const qLat = parseFloat(p.get('lat') || '');
+    const qLng = parseFloat(p.get('lng') || p.get('lon') || '');
+    if (Number.isFinite(qLat) && Number.isFinite(qLng)) {
+      const qZoom = parseFloat(p.get('zoom') || '');
+      const zoom = Number.isFinite(qZoom) ? qZoom : 10;
+      setFlyToLocation({ lat: qLat, lng: qLng, zoom, ts: Date.now() });
+      setMapView(v => ({ ...v, zoom }));
+      return;   // deep-linked to coordinates — don't run IP geolocation
     }
 
     // Delay geolocation until map is ready (after splash screen clears)
